@@ -125,3 +125,41 @@ fn error_recovers_and_continues() {
     assert!(!errs.is_empty());
     assert!(m.items.iter().any(|it| matches!(&it.kind, ItemKind::Fn(_))));
 }
+
+#[test]
+fn binary_ops_are_left_associative() {
+    // 10 - 3 - 2  =>  Sub( Sub(10, 3), 2)   (NOT 10 - (3 - 2))
+    let e = expr("10 - 3 - 2");
+    match e.kind {
+        ExprKind::Binary { op: BinOp::Sub, lhs, rhs } => {
+            assert!(matches!(lhs.kind, ExprKind::Binary { op: BinOp::Sub, .. }));
+            assert!(matches!(rhs.kind, ExprKind::Lit(Lit::Int(_))));
+        }
+        other => panic!("wrong shape: {other:?}"),
+    }
+}
+
+#[test]
+fn subtraction_does_not_swallow_trailing_add() {
+    // 0 - b + 1  =>  Add( Sub(0, b), 1)   (NOT Sub(0, Add(b, 1)))
+    let e = expr("0 - b + 1");
+    match e.kind {
+        ExprKind::Binary { op: BinOp::Add, lhs, rhs } => {
+            assert!(matches!(lhs.kind, ExprKind::Binary { op: BinOp::Sub, .. }));
+            assert!(matches!(rhs.kind, ExprKind::Lit(Lit::Int(_))));
+        }
+        other => panic!("wrong shape: {other:?}"),
+    }
+}
+
+#[test]
+fn division_and_modulo_are_left_associative() {
+    // 8 / 2 * 4  =>  Mul( Div(8, 2), 4)
+    let e = expr("8 / 2 * 4");
+    match e.kind {
+        ExprKind::Binary { op: BinOp::Mul, lhs, .. } => {
+            assert!(matches!(lhs.kind, ExprKind::Binary { op: BinOp::Div, .. }));
+        }
+        other => panic!("wrong shape: {other:?}"),
+    }
+}

@@ -49,15 +49,24 @@ just conjure up. Concretely:
   (29 compiler tests pass). It compiles and runs real programs.
 - Bitboard move generation that is **exact on standard perft positions** (startpos, Kiwipete,
   position 3) across **three build tiers** (SSE2 / SSE4.2+POPCNT / AVX2+BMI2).
-- A searching UCI   engine: on this laptop it does **~1.17M nodes/sec (AVX2 tier)**, roughly **9×
-  faster than its own first (mailbox) version**, and raw-faster than the tier-matched Stockfish's
-  own bench (~469k nps) — though Stockfish does far more work per node, so that number isn't a
-  strength claim.
+- A searching UCI engine: on this laptop it sustains **~0.87M nodes/sec (bench 6, AVX2 tier)**,
+  roughly **7× faster than its own first (mailbox) version**, and raw-faster than the tier-matched
+  Stockfish's own bench (~469k nps) — though Stockfish does far more work per node, so that number
+  isn't a strength claim.
+- Search features: iterative deepening, alpha-beta, quiescence, transposition table, null-move
+  pruning, late-move reductions, killers/history move ordering, check extensions, repetition
+  detection, and a tapered evaluation (piece-square tables + pawn structure + mobility + king
+  safety). `go depth 10` from the start position finishes in ~0.7 s.
 
 **What doesn't (yet), stated plainly:**
-- **It is much weaker than Stockfish.** In a small fair match (both 1 thread, 16 MB hash, 5+0.05)
-  the engine lost **0–8**. The bottleneck isn't speed anymore — it's the **evaluator**, which is
-  material values plus a light positional term. Stockfish uses a mature neural net; we don't yet.
+- **It is much weaker than full Stockfish.** In a fair match (both 1 thread, 16 MB hash, 5+0.05) it
+  lost **0–16** to Stockfish 19 at full strength, but beat the *same* Stockfish restricted to
+  `Skill Level 0` **6–2 (75%)** at identical limits. The bottleneck is no longer the protocol or
+  movegen — it's the **evaluator**: hand-crafted terms, no neural net. Stockfish uses a mature NNUE
+  net; we don't yet.
+- The earlier "0–8, all by mate" result turned out to be a **compiler bug**, not a weak eval:
+  every binary operator was being parsed as right-associative, so `0 - beta + 1` meant
+  `0 - (beta + 1)`. See [docs/milestones/M9-precedence-fix.md](docs/milestones/M9-precedence-fix.md).
 - No LLVM backend yet (the backend is C → clang), no neural-net eval, no opening book, no
   endgame tablebases, and a number of rough edges in the language.
 

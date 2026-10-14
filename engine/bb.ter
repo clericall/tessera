@@ -13,9 +13,9 @@ const ROOK: i64 = 4;
 const QUEEN: i64 = 5;
 const KING: i64 = 6;
 const BAND: i64 = 256;
+const U255: u64 = 255;
 
 struct Pos {
-    board: [i64; 64],
     bb: [u64; 7],
     occ: [u64; 2],
     all: u64,
@@ -41,7 +41,7 @@ static BTBL: [u64; 131072] = [0; 131072];
 static GACC_R: i64 = 0;
 static GACC_B: i64 = 0;
 
-static GMV: [i64; 16384] = [0; 16384];
+static GMV: [i64; 32768] = [0; 32768];
 static GCOUNT: i64 = 0;
 static GBASE: i64 = 0;
 
@@ -65,6 +65,21 @@ fn valid(r: i64, f: i64) -> bool { return r >= 0 && r <= 7 && f >= 0 && f <= 7; 
 fn absb(x: i64) -> i64 { if x < 0 { return 0 - x; } return x; }
 fn colb(p: i64) -> i64 { if p > 0 { return 0; } if p < 0 { return 1; } return 2; }
 fn allones() -> u64 { return 0 - 1; }
+
+fn piece_at(pos: Pos, sq: i64) -> i64 {
+    let b: u64 = bit(sq);
+    if (pos.occ[0] & b) == 0 && (pos.occ[1] & b) == 0 { return 0; }
+    var pt: i64 = 0;
+    if (pos.bb[PAWN] & b) != 0 { pt = PAWN; }
+    if (pos.bb[KNIGHT] & b) != 0 { pt = KNIGHT; }
+    if (pos.bb[BISHOP] & b) != 0 { pt = BISHOP; }
+    if (pos.bb[ROOK] & b) != 0 { pt = ROOK; }
+    if (pos.bb[QUEEN] & b) != 0 { pt = QUEEN; }
+    if (pos.bb[KING] & b) != 0 { pt = KING; }
+    if (pt == 0) { return 0; }
+    if (pos.occ[0] & b) != 0 { return pt; }
+    return 0 - pt;
+}
 
 fn rayr(occ: u64, r: i64, f: i64, dr: i64, df: i64) -> u64 {
     var a: u64 = 0;
@@ -261,18 +276,18 @@ fn gen_pawn(pos: Pos, sq: i64, col: i64, emptyset: u64, opp: u64) {
 fn gen_castle(pos: Pos, sq: i64, col: i64) {
     let other: i64 = 1 - col;
     if col == 0 && sq == 4 {
-        if (pos.castle & 1) != 0 && pos.board[5] == 0 && pos.board[6] == 0 && pos.board[7] == ROOK {
+        if (pos.castle & 1) != 0 && piece_at(pos, 5) == 0 && piece_at(pos, 6) == 0 && piece_at(pos, 7) == ROOK {
             if !attacked64(pos, 4, other) && !attacked64(pos, 5, other) && !attacked64(pos, 6, other) { add_mv(4, 6, 0); }
         }
-        if (pos.castle & 2) != 0 && pos.board[3] == 0 && pos.board[2] == 0 && pos.board[1] == 0 && pos.board[0] == ROOK {
+        if (pos.castle & 2) != 0 && piece_at(pos, 3) == 0 && piece_at(pos, 2) == 0 && piece_at(pos, 1) == 0 && piece_at(pos, 0) == ROOK {
             if !attacked64(pos, 4, other) && !attacked64(pos, 3, other) && !attacked64(pos, 2, other) { add_mv(4, 2, 0); }
         }
     }
     if col == 1 && sq == 60 {
-        if (pos.castle & 4) != 0 && pos.board[61] == 0 && pos.board[62] == 0 && pos.board[63] == 0 - ROOK {
+        if (pos.castle & 4) != 0 && piece_at(pos, 61) == 0 && piece_at(pos, 62) == 0 && piece_at(pos, 63) == 0 - ROOK {
             if !attacked64(pos, 60, other) && !attacked64(pos, 61, other) && !attacked64(pos, 62, other) { add_mv(60, 62, 0); }
         }
-        if (pos.castle & 8) != 0 && pos.board[59] == 0 && pos.board[58] == 0 && pos.board[57] == 0 && pos.board[56] == 0 - ROOK {
+        if (pos.castle & 8) != 0 && piece_at(pos, 59) == 0 && piece_at(pos, 58) == 0 && piece_at(pos, 57) == 0 && piece_at(pos, 56) == 0 - ROOK {
             if !attacked64(pos, 60, other) && !attacked64(pos, 59, other) && !attacked64(pos, 58, other) { add_mv(60, 58, 0); }
         }
     }
@@ -336,46 +351,35 @@ fn make(pos: Pos, mv: i64) -> Pos {
     let f: i64 = mv / 1000000;
     let t: i64 = (mv / 1000) % 1000;
     let promo: i64 = mv % 1000;
-    let piece: i64 = pos.board[f];
+    let piece: i64 = piece_at(pos, f);
     let pt: i64 = absb(piece);
     let col: i64 = colb(piece);
     c.bb[pt] = c.bb[pt] ^ bit(f);
     c.occ[col] = c.occ[col] ^ bit(f);
-    c.board[f] = 0;
-    let cap: i64 = pos.board[t];
+    let cap: i64 = piece_at(pos, t);
     if cap != 0 {
         c.bb[absb(cap)] = c.bb[absb(cap)] ^ bit(t);
         c.occ[colb(cap)] = c.occ[colb(cap)] ^ bit(t);
-        c.board[t] = 0;
     }
     if pt == PAWN && t == pos.ep && cap == 0 {
         var capsq: i64 = t - 8;
         if col != 0 { capsq = t + 8; }
         c.bb[PAWN] = c.bb[PAWN] ^ bit(capsq);
         c.occ[1 - col] = c.occ[1 - col] ^ bit(capsq);
-        c.board[capsq] = 0;
     }
-    if promo != 0 {
-        c.bb[promo] = c.bb[promo] | bit(t);
-        var np: i64 = promo;
-        if col != 0 { np = 0 - promo; }
-        c.board[t] = np;
-    } else {
-        c.bb[pt] = c.bb[pt] | bit(t);
-        c.board[t] = piece;
-    }
-    c.occ[col] = c.occ[col] | bit(t);
+    if promo != 0 { c.bb[promo] = c.bb[promo] | bit(t); }
+    else { c.bb[pt] = c.bb[pt] | bit(t); }    c.occ[col] = c.occ[col] | bit(t);
     if pt == KING && absb(t - f) == 2 {
         if t > f {
             c.bb[ROOK] = (c.bb[ROOK] ^ bit(f + 3)) | bit(f + 1);
             c.occ[col] = (c.occ[col] ^ bit(f + 3)) | bit(f + 1);
-            c.board[f + 1] = c.board[f + 3];
-            c.board[f + 3] = 0;
+
+
         } else {
             c.bb[ROOK] = (c.bb[ROOK] ^ bit(f - 4)) | bit(f - 1);
             c.occ[col] = (c.occ[col] ^ bit(f - 4)) | bit(f - 1);
-            c.board[f - 1] = c.board[f - 4];
-            c.board[f - 4] = 0;
+
+
         }
     }
     if pt == KING { c.king[col] = t; }
@@ -427,7 +431,7 @@ fn fen_piece(ch: i64) -> i64 {
     return 0;
 }
 fn from_fen_bb(fen: str, base: i64) -> Pos {
-    var p: Pos = Pos { board: [0; 64], bb: [0; 7], occ: [0; 2], all: 0, stm: 0, ep: 0 - 1, castle: 0, king: [4, 60], key: 0 };
+    var p: Pos = Pos { bb: [0; 7], occ: [0; 2], all: 0, stm: 0, ep: 0 - 1, castle: 0, king: [4, 60], key: 0 };
     var idx: i64 = base;
     var fr: i64 = 8;
     while fr >= 1 {
@@ -440,9 +444,12 @@ fn from_fen_bb(fen: str, base: i64) -> Pos {
             else {
                 let sq: i64 = row * 8 + file;
                 let pc: i64 = fen_piece(ch);
-                p.board[sq] = pc;
-                if pc == KING { p.king[0] = sq; }
-                if pc == 0 - KING { p.king[1] = sq; }
+                if pc != 0 {
+                    p.bb[absb(pc)] = p.bb[absb(pc)] | bit(sq);
+                    p.occ[colb(pc)] = p.occ[colb(pc)] | bit(sq);
+                    if pc == KING { p.king[0] = sq; }
+                    if pc == 0 - KING { p.king[1] = sq; }
+                }
                 file = file + 1;
             }
         }
@@ -472,21 +479,21 @@ fn from_fen_bb(fen: str, base: i64) -> Pos {
         p.ep = (er - 1) * 8 + (ef - 1);
         idx = idx + 2;
     }
-    var sq: i64 = 0;
-    while sq < 64 {
-        let pc: i64 = p.board[sq];
-        if pc != 0 {
-            p.bb[absb(pc)] = p.bb[absb(pc)] | bit(sq);
-            p.occ[colb(pc)] = p.occ[colb(pc)] | bit(sq);
-        }
-        sq = sq + 1;
-    }
     var kk: i64 = 0;
-    var sq3: i64 = 0;
-    while sq3 < 64 {
-        let pc2: i64 = p.board[sq3];
-        if pc2 != 0 { kk = kk ^ ZP[zidx(absb(pc2), colb(pc2), sq3)]; }
-        sq3 = sq3 + 1;
+    var col2: i64 = 0;
+    while col2 < 2 {
+        var pt3: i64 = 1;
+        while pt3 <= 6 {
+            var b: u64 = p.bb[pt3] & p.occ[col2];
+            while b != 0 {
+                let lsb: u64 = b & (0 - b);
+                let sq: i64 = ctz(lsb);
+                b = b ^ lsb;
+                kk = kk ^ ZP[zidx(pt3, col2, sq)];
+            }
+            pt3 += 1;
+        }
+        col2 += 1;
     }
     if p.stm == 1 { kk = kk ^ ZSTD; }
     kk = kk ^ ZCASTLE[p.castle];
@@ -495,7 +502,6 @@ fn from_fen_bb(fen: str, base: i64) -> Pos {
     p.all = p.occ[0] | p.occ[1];
     return p;
 }
-
 fn perft_bb(pos: Pos, depth: i64, ply: i64) -> i64 {
     if depth == 0 { return 1; }
     let n: i64 = gen(pos, ply);
@@ -520,6 +526,7 @@ static TT_MOVE: [i64; 262144] = [0; 262144];
 static TT_SCORE: [i64; 262144] = [0; 262144];
 static TT_DEPTH: [i64; 262144] = [0; 262144];
 static TT_FLAG: [i64; 262144] = [0; 262144];
+static KEYSTACK: [i64; 256] = [0; 256];
 static NODES: i64 = 0;
 static DEADLINE: i64 = 0;
 static QUIET: i64 = 0;
@@ -527,34 +534,284 @@ static BESTSCORE: i64 = 0;
 
 fn in_check_bb(pos: Pos, col: i64) -> bool { return attacked64(pos, pos.king[col], 1 - col); }
 
-fn eval_pos_bb(pos: Pos) -> i64 {
-    var score: i64 = 0;
-    var sq: i64 = 0;
-    while sq < 64 {
-        let p: i64 = pos.board[sq];
-        if p != 0 {
-            let a: i64 = absb(p);
-            var v: i64 = 0;
-            if a == PAWN { v = 100; }
-            if a == KNIGHT { v = 320; }
-            if a == BISHOP { v = 330; }
-            if a == ROOK { v = 500; }
-            if a == QUEEN { v = 900; }
-            let file: i64 = sq & 7;
-            let rank: i64 = sq >> 3;
-            if a == PAWN { if colb(p) == 0 { v = v + rank * 5; } else { v = v + (7 - rank) * 5; } }
-            if a == KNIGHT || a == BISHOP {
-                let cf: i64 = absb(file - 3);
-                let cr: i64 = absb(rank - 3);
-                let cd: i64 = cf + cr;
-                if cd <= 6 { v = v + (6 - cd) * 3; }
-            }
-            if colb(p) == 0 { score = score + v; } else { score = score - v; }
-        }
-        sq = sq + 1;
+static FILEBB: [u64; 8] = [0; 8];
+static RANKBB: [u64; 8] = [0; 8];
+static E_MG: i64 = 0;
+static E_EG: i64 = 0;
+static E_PH: i64 = 0;
+static ZMASK: [u64; 2] = [0; 2];
+static T0: i64 = 0;
+static ABORT: i64 = 0;
+
+fn addmg(v: i64) { E_MG = E_MG + v; }
+fn addeg(v: i64) { E_EG = E_EG + v; }
+fn addph(v: i64) { E_PH = E_PH + v; }
+
+fn init_eval() {
+    var f: i64 = 0;
+    while f < 8 { FILEBB[f] = (0 - 1) << f; f += 1; }
+    var r: i64 = 0;
+    while r < 8 { RANKBB[r] = U255 << (r * 8); r += 1; }
+}
+
+// Flip files so black's pieces can be scored in white's frame of reference.
+fn mirrorbb(b: u64) -> u64 {
+    var out: u64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        let row: u64 = (b >> (i * 8)) & U255;
+        out = out | (row << ((7 - i) * 8));
+        i += 1;
     }
-    if pos.stm == 1 { score = 0 - score; }
-    return score;
+    return out;
+}
+
+fn matmg(pt: i64) -> i64 {
+    if pt == PAWN { return 82; }
+    if pt == KNIGHT { return 337; }
+    if pt == BISHOP { return 365; }
+    if pt == ROOK { return 477; }
+    if pt == QUEEN { return 1025; }
+    return 0;
+}
+fn mateg(pt: i64) -> i64 {
+    if pt == PAWN { return 94; }
+    if pt == KNIGHT { return 281; }
+    if pt == BISHOP { return 297; }
+    if pt == ROOK { return 512; }
+    if pt == QUEEN { return 936; }
+    return 0;
+}
+fn phasev(pt: i64) -> i64 {
+    if pt == KNIGHT { return 1; }
+    if pt == BISHOP { return 1; }
+    if pt == ROOK { return 2; }
+    if pt == QUEEN { return 4; }
+    return 0;
+}
+// 0 = centre square, 7 = corner, in doubled units so we stay in integers.
+fn centerd(r: i64, f: i64) -> i64 { return (absb(2 * f - 7) + absb(2 * r - 7)) / 2; }
+
+fn pstmg(pt: i64, r: i64, f: i64) -> i64 {
+    let d: i64 = centerd(r, f);
+    if pt == PAWN {
+        var a: i64 = 0;
+        if r >= 2 { a = (r - 1) * 7; if a > 24 { a = 24; } }
+        if f >= 3 && f <= 4 { a += 6; }
+        return a;
+    }
+    if pt == KNIGHT { return (7 - d) * 8 - 12; }
+    if pt == BISHOP { return (7 - d) * 7 - 9; }
+    if pt == ROOK {
+        var a: i64 = 0;
+        if r == 6 { a = 12; }
+        if r == 7 { a = 24; }
+        return a;
+    }
+    if pt == QUEEN { return (7 - d) * 3 - 6; }
+    var a: i64 = 0 - d * 14;
+    if r == 0 { a = a + 26; }
+    if r == 1 { a = a + 6; }
+    if f >= 2 && f <= 5 { a = a + 10; }
+    if r >= 2 && r <= 5 { a = a - 30; }
+    if f >= 2 && f <= 5 && r >= 2 && r <= 5 { a = a - 18; }
+    return a;
+}
+
+fn psteg(pt: i64, r: i64, f: i64) -> i64 {
+    let d: i64 = centerd(r, f);
+    if pt == PAWN {
+        var a: i64 = 0;
+        if r >= 2 { a = (r - 1) * 12; if a > 40 { a = 40; } }
+        if f >= 2 && f <= 5 { a = a + 4; }
+        return a;
+    }
+    if pt == KNIGHT { return (7 - d) * 11 - 14; }
+    if pt == BISHOP { return (7 - d) * 10 - 12; }
+    if pt == ROOK {
+        var a: i64 = 0;
+        if r == 6 { a = 16; }
+        if r == 7 { a = 22; }
+        return a;
+    }
+    if pt == QUEEN { return (7 - d) * 4 - 8; }
+    return (7 - d) * 11 - 20;
+}
+
+fn zone_of(ksq: i64) -> u64 {
+    let z0: u64 = KG[ksq] | bit(ksq);
+    var z: u64 = z0;
+    var b: u64 = z0;
+    while b != 0 {
+        let lsb: u64 = b & (0 - b);
+        let sq: i64 = ctz(lsb);
+        b = b ^ lsb;
+        z = z | KG[sq];
+    }
+    return z;
+}
+
+fn score_pawns(ownr: u64, oppr: u64, sgn: i64) {
+    var p: u64 = ownr;
+    while p != 0 {
+        let lsb: u64 = p & (0 - p);
+        let sq: i64 = ctz(lsb);
+        p = p ^ lsb;
+        let f: i64 = sq & 7;
+        let r: i64 = sq >> 3;
+        var iso: bool = false;
+        if f > 0 && (ownr & bit(sq - 1)) == 0 { iso = true; }
+        if f < 7 && (ownr & bit(sq + 1)) == 0 { iso = true; }
+        if iso { addmg(sgn * (0 - 14)); addeg(sgn * (0 - 18)); }
+        var dbl: bool = false;
+        if r > 0 && (ownr & FILEBB[f] & RANKBB[r - 1]) != 0 { dbl = true; }
+        if dbl { addmg(sgn * (0 - 8)); addeg(sgn * (0 - 24)); }
+        var pha: bool = false;
+        if f > 0 && (ownr & bit(sq - 1)) != 0 { pha = true; }
+        if f < 7 && (ownr & bit(sq + 1)) != 0 { pha = true; }
+        if pha { addmg(sgn * 6); }
+        var ahead: u64 = 0;
+        var k: i64 = r + 1;
+        while k < 8 { ahead = ahead | RANKBB[k]; k += 1; }
+        var em: u64 = FILEBB[f];
+        if f > 0 { em = em | FILEBB[f - 1]; }
+        if f < 7 { em = em | FILEBB[f + 1]; }
+        if (oppr & em & ahead) == 0 {
+            addmg(sgn * (10 + r * 5));
+            addeg(sgn * (16 + r * 14));
+        }
+    }
+}
+
+// One pass per side: every piece's attack set is computed exactly once and then
+// used for both our own mobility and pressure on the enemy king zone.
+fn score_attacks(pos: Pos, col: i64, sgn: i64) {
+    let own: u64 = pos.occ[col];
+    let opp: u64 = pos.occ[1 - col];
+    let notown: u64 = allones() ^ own;
+    var uns: u64 = KG[pos.king[1 - col]];
+    var eb: u64 = pos.bb[PAWN] & opp;
+    while eb != 0 {
+        let lsb: u64 = eb & (0 - eb);
+        let sq: i64 = ctz(lsb);
+        eb = eb ^ lsb;
+        if col == 0 { uns = uns | PA1[sq]; } else { uns = uns | PA0[sq]; }
+    }
+    let safe: u64 = notown & (allones() ^ uns);
+    let zone: u64 = ZMASK[1 - col];
+    var pb: u64 = pos.bb[PAWN] & own;
+    while pb != 0 {
+        let lsb: u64 = pb & (0 - pb);
+        let sq: i64 = ctz(lsb);
+        pb = pb ^ lsb;
+        var patk: u64 = 0;
+        if col == 0 { patk = PA0[sq]; } else { patk = PA1[sq]; }
+        let ph: i64 = popcount(patk & zone);
+        if ph > 0 { addmg(sgn * (0 - 4 * ph)); }
+    }
+    var pt: i64 = KNIGHT;
+    while pt <= QUEEN {
+        var bb: u64 = pos.bb[pt] & own;
+        while bb != 0 {
+            let lsb: u64 = bb & (0 - bb);
+            let sq: i64 = ctz(lsb);
+            bb = bb ^ lsb;
+            var atk: u64 = 0;
+            if pt == KNIGHT { atk = KN[sq]; }
+            if pt == BISHOP { atk = bish_attacks(pos, sq); }
+            if pt == ROOK { atk = rook_attacks(pos, sq); }
+            if pt == QUEEN { atk = rook_attacks(pos, sq) | bish_attacks(pos, sq); }
+            let m: i64 = popcount(atk & safe);
+            var base: i64 = 4;
+            var wm: i64 = 3;
+            var we: i64 = 3;
+            var wk: i64 = 6;
+            if pt == BISHOP { base = 6; wm = 3; we = 3; wk = 5; }
+            if pt == ROOK { base = 7; wm = 2; we = 3; wk = 9; }
+            if pt == QUEEN { base = 14; wm = 1; we = 2; wk = 12; }
+            addmg(sgn * ((m - base) * wm));
+            addeg(sgn * ((m - base) * we));
+            let h: i64 = popcount(atk & zone);
+            if h > 0 { addmg(sgn * (0 - wk * h)); }
+        }
+        pt += 1;
+    }
+    var kb: u64 = pos.bb[KING] & own;
+    while kb != 0 {
+        let lsb: u64 = kb & (0 - kb);
+        let sq: i64 = ctz(lsb);
+        kb = kb ^ lsb;
+        let h: i64 = popcount(KG[sq] & zone);
+        if h > 0 { addmg(sgn * (0 - 8 * h)); }
+    }
+}
+
+fn score_side(pos: Pos, col: i64, ownr: u64, oppr: u64, sgn: i64) {
+    let own: u64 = pos.occ[col];
+    let opp: u64 = pos.occ[1 - col];
+    var pt: i64 = KNIGHT;
+    while pt <= QUEEN {
+        var bb: u64 = pos.bb[pt] & own;
+        while bb != 0 {
+            let lsb: u64 = bb & (0 - bb);
+            let sq: i64 = ctz(lsb);
+            bb = bb ^ lsb;
+            var rf: i64 = sq & 7;
+            var rr: i64 = sq >> 3;
+            if col == 1 { rf = 7 - rf; rr = 7 - rr; }
+            addmg(sgn * (matmg(pt) + pstmg(pt, rr, rf)));
+            addeg(sgn * (mateg(pt) + psteg(pt, rr, rf)));
+            addph(phasev(pt));
+        }
+        pt += 1;
+    }
+    var pb: u64 = pos.bb[PAWN] & own;
+    while pb != 0 {
+        let lsb: u64 = pb & (0 - pb);
+        let sq: i64 = ctz(lsb);
+        pb = pb ^ lsb;
+        var rf: i64 = sq & 7;
+        var rr: i64 = sq >> 3;
+        if col == 1 { rf = 7 - rf; rr = 7 - rr; }
+        addmg(sgn * (matmg(PAWN) + pstmg(PAWN, rr, rf)));
+        addeg(sgn * (mateg(PAWN) + psteg(PAWN, rr, rf)));
+    }
+    if popcount(pos.bb[BISHOP] & own) >= 2 { addmg(sgn * 40); addeg(sgn * 52); }
+    score_pawns(ownr, oppr, sgn);
+    var rb: u64 = pos.bb[ROOK] & own;
+    while rb != 0 {
+        let lsb: u64 = rb & (0 - rb);
+        let sq: i64 = ctz(lsb);
+        rb = rb ^ lsb;
+        let fm: u64 = FILEBB[sq & 7];
+        if (pos.bb[PAWN] & fm) == 0 {
+            if (pos.bb[PAWN] & opp & fm) == 0 { addmg(sgn * 24); addeg(sgn * 10); }
+            else { addmg(sgn * 12); addeg(sgn * 6); }
+        }
+    }
+    score_attacks(pos, col, sgn);
+}
+
+fn eval_pos_bb(pos: Pos) -> i64 {
+    E_MG = 0;
+    E_EG = 0;
+    E_PH = 0;
+    ZMASK[0] = zone_of(pos.king[0]);
+    ZMASK[1] = zone_of(pos.king[1]);
+    var col: i64 = 0;
+    while col < 2 {
+        let sgn: i64 = 1 - 2 * col;
+        let ownr: u64 = pos.occ[col];
+        let oppr: u64 = pos.occ[1 - col];
+        if col == 1 { ownr = mirrorbb(ownr); oppr = mirrorbb(oppr); }
+        score_side(pos, col, ownr, oppr, sgn);
+        col += 1;
+    }
+    if E_PH > 24 { E_PH = 24; }
+    let sc: i64 = (E_MG * E_PH + E_EG * (24 - E_PH)) / 24;
+    var r: i64 = sc;
+    if pos.stm == 1 { r = 0 - sc; }
+    return r + 10;
 }
 
 fn score_of_bb(pos: Pos, mv: i64) -> i64 {
@@ -562,34 +819,62 @@ fn score_of_bb(pos: Pos, mv: i64) -> i64 {
     let rem: i64 = mv - f * 1000000;
     let tt: i64 = rem / 1000;
     let pr: i64 = rem % 1000;
-    let attacker: i64 = absb(pos.board[f]);
-    let cap: bool = pos.board[tt] != 0 || (attacker == PAWN && tt == pos.ep && pos.board[tt] == 0);
+    let attacker: i64 = absb(piece_at(pos, f));
+    let cap: bool = piece_at(pos, tt) != 0 || (attacker == PAWN && tt == pos.ep && piece_at(pos, tt) == 0);
     var s: i64 = 0;
     if cap {
-        var victim: i64 = absb(pos.board[tt]);
+        var victim: i64 = absb(piece_at(pos, tt));
         if victim == 0 { victim = PAWN; }
         s = 1000000 + victim * 100 - attacker;
     }
     if pr != 0 { s = s + pr * 500; }
     return s;
 }
+static MSCR: [i64; 256] = [0; 256];
+static KILL1: [i64; 128] = [0; 128];
+static KILL2: [i64; 128] = [0; 128];
+static HIST: [i64; 8192] = [0; 8192];
+
+fn mv_score(pos: Pos, mv: i64, ply: i64) -> i64 {
+    let f: i64 = mv / 1000000;
+    let rem: i64 = mv - f * 1000000;
+    let tt: i64 = rem / 1000;
+    let pr: i64 = rem % 1000;
+    let attacker: i64 = absb(piece_at(pos, f));
+    let victim: i64 = absb(piece_at(pos, tt));
+    if victim != 0 || (attacker == PAWN && tt == pos.ep) {
+        if victim == 0 { return 1000000 + PAWN * 100 - attacker + pr * 500; }
+        return 1000000 + victim * 100 - attacker + pr * 500;
+    }
+    if mv == KILL1[ply] { return 900000; }
+    if mv == KILL2[ply] { return 800000; }
+    return HIST[pos.stm * 768 + f * 64 + tt];
+}
+
 fn order_moves(pos: Pos, ply: i64, n: i64) {
     let base: i64 = ply * BAND;
-    var last: i64 = 0;
-    var j: i64 = 0;
-    while j < n {
-        let f: i64 = GMV[base + j] / 1000000;
-        let rem: i64 = GMV[base + j] - f * 1000000;
-        let tt: i64 = rem / 1000;
-        let attacker: i64 = absb(pos.board[f]);
-        let iscap: bool = pos.board[tt] != 0 || (attacker == PAWN && tt == pos.ep && pos.board[tt] == 0);
-        if iscap {
-            if j != last { let tmp: i64 = GMV[base + last]; GMV[base + last] = GMV[base + j]; GMV[base + j] = tmp; }
-            last += 1;
+    var i: i64 = 0;
+    while i < n { MSCR[i] = mv_score(pos, GMV[base + i], ply); i += 1; }
+    i = 0;
+    while i < n {
+        var best: i64 = i;
+        var j: i64 = i + 1;
+        while j < n {
+            if MSCR[j] > MSCR[best] { best = j; }
+            j += 1;
         }
-        j += 1;
+        if best != i {
+            let tm: i64 = GMV[base + i];
+            GMV[base + i] = GMV[base + best];
+            GMV[base + best] = tm;
+            let ts: i64 = MSCR[i];
+            MSCR[i] = MSCR[best];
+            MSCR[best] = ts;
+        }
+        i += 1;
     }
 }
+
 fn prepend_best(ply: i64, n: i64, bestmv: i64) {
     if bestmv < 0 { return; }
     let base: i64 = ply * BAND;
@@ -604,13 +889,17 @@ fn prepend_best(ply: i64, n: i64, bestmv: i64) {
 
 fn quiesce(pos: Pos, mut_a: i64, beta: i64, ply: i64) -> i64 {
     NODES += 1;
-    if ply >= 24 { return eval_pos_bb(pos); }
+    if ABORT == 1 { return mut_a; }
+    if (NODES & 1023) == 0 && DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
+    if ply >= 120 { return eval_pos_bb(pos); }
+    let incheck: bool = in_check_bb(pos, pos.stm);
     let stand: i64 = eval_pos_bb(pos);
-    if stand >= beta { return beta; }
+    if stand >= beta { return stand; }
     var alpha: i64 = mut_a;
     if stand > alpha { alpha = stand; }
     let n: i64 = gen(pos, ply);
     order_moves(pos, ply, n);
+    var legal: i64 = 0;
     var i: i64 = 0;
     while i < n {
         let mv: i64 = GMV[ply * BAND + i];
@@ -618,27 +907,50 @@ fn quiesce(pos: Pos, mut_a: i64, beta: i64, ply: i64) -> i64 {
         let rem: i64 = mv - f * 1000000;
         let tt: i64 = rem / 1000;
         let pr: i64 = rem % 1000;
-        let attacker: i64 = absb(pos.board[f]);
-        let capnow: bool = pos.board[tt] != 0 || (attacker == PAWN && tt == pos.ep && pos.board[tt] == 0);
-        if capnow || pr != 0 {
-            let child: Pos = make(pos, mv);
-            if !in_check_bb(child, pos.stm) {
-                let sc: i64 = 0 - quiesce(child, 0 - beta, 0 - alpha, ply + 1);
-                if sc >= beta { return beta; }
-                if sc > alpha { alpha = sc; }
+        let attacker: i64 = absb(piece_at(pos, f));
+        let victim: i64 = absb(piece_at(pos, tt));
+        let iscap: bool = victim != 0 || pr != 0 || (attacker == PAWN && tt == pos.ep);
+        if iscap || incheck {
+            var tryit: bool = true;
+            if !incheck {
+                var gain: i64 = PAWN * 100;
+                if victim != 0 { gain = victim * 100; }
+                if stand + gain + 150 < alpha { tryit = false; }
+            }
+            if tryit {
+                let child: Pos = make(pos, mv);
+                if !in_check_bb(child, pos.stm) {
+                    legal += 1;
+                    let sc: i64 = 0 - quiesce(child, 0 - beta, 0 - alpha, ply + 1);
+                    if sc >= beta { return beta; }
+                    if sc > alpha { alpha = sc; }
+                }
             }
         }
         i += 1;
     }
+    if legal == 0 && incheck { return 0 - 100000 + ply; }
     return alpha;
 }
 
 fn negamax(pos: Pos, depth: i64, mut_a: i64, beta: i64, ply: i64) -> i64 {
-    if depth <= 0 { return quiesce(pos, mut_a, beta, ply); }
+    if ply >= 120 { return eval_pos_bb(pos); }
+    NODES += 1;
+    if ABORT == 1 { return mut_a; }
+    if (NODES & 1023) == 0 && DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
     let key: i64 = pos.key;
-    let idx: i64 = key & 262143;
+    KEYSTACK[ply] = key;
+    var ri: i64 = 0;
+    while ri < ply {
+        if KEYSTACK[ri] == key { return 0; }
+        ri += 1;
+    }
     let alpha0: i64 = mut_a;
-    if TT_KEY[idx] == key && TT_DEPTH[idx] >= depth {
+    let incheck: bool = in_check_bb(pos, pos.stm);
+    var d: i64 = depth;
+    if incheck { d = d + 1; }
+    let idx: i64 = key & 262143;
+    if TT_KEY[idx] == key && TT_DEPTH[idx] >= depth && !incheck {
         let sc: i64 = TT_SCORE[idx];
         let fl: i64 = TT_FLAG[idx];
         if fl == 1 { return sc; }
@@ -646,32 +958,74 @@ fn negamax(pos: Pos, depth: i64, mut_a: i64, beta: i64, ply: i64) -> i64 {
         if fl == 3 && sc <= mut_a { return sc; }
     }
     let hint: i64 = TT_MOVE[idx];
+    if d <= 0 { return quiesce(pos, mut_a, beta, ply); }
+    if depth >= 3 && !incheck {
+        let heavy: u64 = pos.bb[KNIGHT] | pos.bb[BISHOP] | pos.bb[ROOK] | pos.bb[QUEEN];
+        if (heavy & pos.occ[pos.stm]) != 0 {
+            var c: Pos = pos;
+            c.stm = 1 - pos.stm;
+            c.ep = 0 - 1;
+            c.key = c.key ^ ZSTD;
+            let R: i64 = 2 + depth / 4;
+            let sc: i64 = 0 - negamax(c, depth - R, 0 - beta, 0 - beta + 1, ply + 1);
+            if sc >= beta {
+                if sc > 99900 { return beta; }
+                return sc;
+            }
+        }
+    }
     let n: i64 = gen(pos, ply);
     order_moves(pos, ply, n);
     if hint >= 0 { prepend_best(ply, n, hint); }
     var legal: i64 = 0;
-    var best: i64 = -1000000;
-    var bestmv: i64 = -1;
+    var best: i64 = 0 - 100000000;
+    var bestmv: i64 = 0 - 1;
     var alpha: i64 = mut_a;
     var i: i64 = 0;
     while i < n {
         let mv: i64 = GMV[ply * BAND + i];
+        let f: i64 = mv / 1000000;
+        let rem: i64 = mv - f * 1000000;
+        let tt: i64 = rem / 1000;
+        let pr: i64 = rem % 1000;
+        let attacker: i64 = absb(piece_at(pos, f));
+        let victim: i64 = absb(piece_at(pos, tt));
+        let iscap: bool = victim != 0 || pr != 0 || (attacker == PAWN && tt == pos.ep);
         let child: Pos = make(pos, mv);
         if !in_check_bb(child, pos.stm) {
             legal += 1;
-            let sc: i64 = 0 - negamax(child, depth - 1, 0 - beta, 0 - alpha, ply + 1);
+            var red: i64 = 0;
+            if !iscap && !incheck && depth >= 3 && legal > 3 {
+                red = 1;
+                if legal > 8 { red = 2; }
+            }
+            var sc: i64 = 0 - negamax(child, d - 1 - red, 0 - beta, 0 - alpha, ply + 1);
+            if red > 0 && sc > alpha && sc < beta {
+                let sc2: i64 = 0 - negamax(child, d - 1, 0 - beta, 0 - alpha, ply + 1);
+                if sc2 > sc { sc = sc2; }
+            }
             if sc > best { best = sc; bestmv = mv; }
             if sc > alpha { alpha = sc; }
-            if alpha >= beta { i = n; }
+            if alpha >= beta {
+                if !iscap {
+                    let hidx: i64 = pos.stm * 768 + f * 64 + tt;
+                    HIST[hidx] = HIST[hidx] + depth * depth;
+                    if HIST[hidx] > 6000 { HIST[hidx] = 3000; }
+                    if KILL1[ply] != mv {
+                        KILL2[ply] = KILL1[ply];
+                        KILL1[ply] = mv;
+                    }
+                }
+                i = n;
+            }
         }
         i += 1;
     }
-    NODES += 1;
     if legal == 0 {
-        if in_check_bb(pos, pos.stm) { return -100000 + ply; }
+        if incheck { return 0 - 100000 + ply; }
         return 0;
     }
-    if best > -99900 && best < 99900 {
+    if best > 0 - 99900 && best < 99900 {
         TT_KEY[idx] = key;
         TT_DEPTH[idx] = depth;
         TT_MOVE[idx] = bestmv;
@@ -683,40 +1037,55 @@ fn negamax(pos: Pos, depth: i64, mut_a: i64, beta: i64, ply: i64) -> i64 {
 
 fn search_root(pos: Pos, maxdepth: i64) -> i64 {
     NODES = 0;
-    var bestmv: i64 = -1;
-    var best: i64 = -1000000;
+    T0 = now_ms();
+    var bestmv: i64 = 0 - 1;
+    var best: i64 = 0 - 100000000;
     var stop: i64 = 0;
     var d: i64 = 1;
     while d <= maxdepth && stop == 0 {
+        ABORT = 0;
         let n: i64 = gen(pos, 0);
         order_moves(pos, 0, n);
         if bestmv >= 0 { prepend_best(0, n, bestmv); }
-        var alpha: i64 = -1000000;
-        var localbest: i64 = -1000000;
-        var localmv: i64 = -1;
+        var alpha: i64 = 0 - 100000000;
+        var localbest: i64 = 0 - 100000000;
+        var localmv: i64 = 0 - 1;
+        var ext: i64 = 0;
+        if in_check_bb(pos, pos.stm) { ext = 1; }
         var i: i64 = 0;
         while i < n {
             let mv: i64 = GMV[i];
             let child: Pos = make(pos, mv);
             if !in_check_bb(child, pos.stm) {
-                let sc: i64 = 0 - negamax(child, d - 1, -1000000, 0 - alpha, 1);
+                let sc: i64 = 0 - negamax(child, d + ext - 1, 0 - 100000000, 0 - alpha, 1);
                 if sc > localbest { localbest = sc; localmv = mv; }
                 if sc > alpha { alpha = sc; }
             }
             i += 1;
         }
-        if localmv >= 0 { bestmv = localmv; best = localbest; } else { stop = 1; }
+        if ABORT == 1 { stop = 1; }
+        else if localmv >= 0 { bestmv = localmv; best = localbest; }
+        else { stop = 1; }
         if QUIET == 0 {
+            var el: i64 = now_ms() - T0;
+            var nn: i64 = 0;
+            if el > 0 { nn = (NODES * 1000) / el; }
             putstr("info depth "); putint(d);
-            putstr(" score cp "); putint(best);
+            if best > 99000 || best < 0 - 99000 {
+                var mp: i64 = 0;
+                if best < 0 { mp = best + 100000; } else { mp = 100000 - best; }
+                putstr(" score mate "); putint(mp / 2);
+            } else {
+                putstr(" score cp "); putint(best);
+            }
             putstr(" nodes "); putint(NODES);
+            putstr(" nps "); putint(nn);
             putc(10);
         }
         if d >= maxdepth { stop = 1; }
         if DEADLINE > 0 && now_ms() >= DEADLINE { stop = 1; }
         d += 1;
     }
-    BESTSCORE = best;
     return bestmv;
 }
 
@@ -815,7 +1184,7 @@ fn num_after(line: str, start: i64) -> i64 {
 }
 fn parse_depth(line: str) -> i64 {
     var i: i64 = 0;
-    var d: i64 = 4;
+    var d: i64 = 0;
     while i + 5 <= len(line) {
         if line[i] == 100 && line[i + 1] == 101 && line[i + 2] == 112 && line[i + 3] == 116 && line[i + 4] == 104 {
             var val: i64 = 0;
@@ -834,6 +1203,7 @@ fn parse_depth(line: str) -> i64 {
 fn main() -> i64 {
     rng_init();
     init_bb();
+    init_eval();
     var pos: Pos = from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0);
     var running: i64 = 1;
     while running == 1 {
@@ -851,6 +1221,23 @@ fn main() -> i64 {
             }
         } else if line[0] == 105 {
             putstr("readyok"); putc(10);
+        } else if line[0] == 112 && line[1] == 101 && line[2] == 114 && line[3] == 102 {
+            let pd: i64 = num_after(line, 6);
+            QUIET = 1;
+            var t1: i64 = perft_bb(from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0), pd, 0);
+            var t2: i64 = perft_bb(from_fen_bb("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 0), pd, 0);
+            var t3: i64 = perft_bb(from_fen_bb("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 0), pd, 0);
+            var t4: i64 = perft_bb(from_fen_bb("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 0), pd, 0);
+            var t5: i64 = perft_bb(from_fen_bb("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 0), pd, 0);
+            var t6: i64 = perft_bb(from_fen_bb("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 0), pd, 0);
+            QUIET = 0;
+            putstr("perft depth "); putint(pd); putc(10);
+            putstr("start   "); putint(t1); putc(10);
+            putstr("kiwi    "); putint(t2); putc(10);
+            putstr("pos3    "); putint(t3); putc(10);
+            putstr("pos4    "); putint(t4); putc(10);
+            putstr("pos5    "); putint(t5); putc(10);
+            putstr("pos6    "); putint(t6); putc(10);
         } else if line[0] == 112 {
             let fb: i64 = find_fen(line);
             if fb > 0 { pos = from_fen_bb(line, fb); } else { pos = from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0); }
@@ -879,7 +1266,7 @@ fn main() -> i64 {
                 }
             }
         } else if line[0] == 103 {
-            var maxdepth: i64 = 6;
+            var maxdepth: i64 = 64;
             let dd: i64 = parse_depth(line);
             if dd > 0 { maxdepth = dd; }
             DEADLINE = now_ms() + 60000;
@@ -893,7 +1280,13 @@ fn main() -> i64 {
                 var myt: i64 = 0; var myinc: i64 = 0;
                 if pos.stm == 0 { if wt >= 0 { myt = num_after(line, wt); } if wi >= 0 { myinc = num_after(line, wi); } }
                 else { if bt >= 0 { myt = num_after(line, bt); } if bi >= 0 { myinc = num_after(line, bi); } }
-                if myt > 0 { DEADLINE = now_ms() + myt / 20 + myinc / 2; }
+                if myt > 0 {
+                    var budget: i64 = myt / 4 + myinc / 2;
+                    if budget > 3000 { budget = 3000; }
+                    if budget < 30 { budget = 30; }
+                    DEADLINE = now_ms() + budget;
+                }
+
             }
             let mv: i64 = search_root(pos, maxdepth);
             print_bestmove_bb(mv);
