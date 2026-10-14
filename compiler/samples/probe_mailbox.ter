@@ -1,0 +1,18 @@
+// Language probe for the engine: 12x12 mailbox array in a struct + repetition literal.
+struct Board {
+    mail: [i64; 120],
+    rooks: [i64; 2],
+}
+
+fn main() -> i64 {
+    var b: Board = Board { mail: [0; 120], rooks: [3, 59] };
+    var off: i64 = 91;
+    b.mail[off] = 5;              // indexed write
+    var total: i64 = 0;
+    for i in 0..120 {
+        total = total + b.mail[i];
+    }
+    let t: i64 = total + b.rooks[0] + b.rooks[1];
+    print_i64(t);                // 5 + 3 + 59 = 67
+    return 0;
+}

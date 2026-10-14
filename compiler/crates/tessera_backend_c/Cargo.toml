@@ -1,0 +1,8 @@
+[package]
+name = "tessera_backend_c"
+version = "0.1.0"
+edition = "2021"
+description = "Tessera C backend (typed IR -> readable C)"
+
+[dependencies]
+tessera_check = { path = "../tessera_check" }

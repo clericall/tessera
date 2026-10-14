@@ -1,0 +1,20 @@
+# Rust / cargo build output
+/compiler/target/
+
+# ---- tesserac-generated artifacts (C source + native binaries) ----
+# Generated C and executables land next to the examples, and some binaries
+# have no extension, so ignore the whole samples dir except the .ter sources.
+compiler/samples/*
+!compiler/samples/*.ter
+
+*.exe
+*.exe.c
+*.obj
+*.o
+*.pdb
+*.ilk
+
+# ---- OS junk ----
+Thumbs.db
+desktop.ini
+.DS_Store

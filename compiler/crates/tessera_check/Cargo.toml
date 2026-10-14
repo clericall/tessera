@@ -1,0 +1,9 @@
+[package]
+name = "tessera_check"
+version = "0.1.0"
+edition = "2021"
+description = "Tessera type checker + typed IR (minimal slice)"
+
+[dependencies]
+tessera_lexer = { path = "../tessera_lexer" }
+tessera_ast = { path = "../tessera_ast" }

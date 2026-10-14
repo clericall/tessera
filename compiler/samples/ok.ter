@@ -1,0 +1,24 @@
+// Tessera lexer sample — clean input (used by the milestone demo).
+type BitBoard = u64;
+
+enum Color { White = 0, Black = 1 }
+
+struct Position {
+    pieces: [u64; 6],
+    colors: [u64; 2],
+    stm: Color,
+}
+
+const fn build_knight_table() -> [u64; 64] {
+    let t: [u64; 64] = default();
+    return t;
+}
+
+fn perft(pos: &Position, depth: i32) -> u64 {
+    if depth == 0 { return 1; }
+    var nodes: u64 = 0;
+    for i in 0..64 {
+        nodes = nodes + 0x1;
+    }
+    return nodes;
+}

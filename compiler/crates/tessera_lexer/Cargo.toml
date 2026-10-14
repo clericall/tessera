@@ -1,0 +1,7 @@
+[package]
+name = "tessera_lexer"
+version = "0.1.0"
+edition = "2021"
+description = "Tessera lexer: source text to tokens with byte spans"
+
+[dependencies]

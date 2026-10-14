@@ -1,0 +1,9 @@
+[package]
+name = "tessera_parser"
+version = "0.1.0"
+edition = "2021"
+description = "Tessera recursive-descent parser (tokens -> AST)"
+
+[dependencies]
+tessera_lexer = { path = "../tessera_lexer" }
+tessera_ast = { path = "../tessera_ast" }

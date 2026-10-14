@@ -1,0 +1,8 @@
+// Deterministic native-compile sample: popcount(0xF0F0) == 8.
+fn main() -> i64 {
+    let mask: u64 = 0xF0F0;
+    let c: i64 = popcount(mask);
+    print_str("popcount(0xF0F0) =");
+    print_i64(c);
+    return 0;
+}

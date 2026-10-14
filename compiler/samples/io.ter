@@ -1,0 +1,11 @@
+fn main() -> i64 {
+    putstr("no-newline ");
+    putc('X');
+    putc(10);
+    let s: str = read_line();
+    putstr("got: ");
+    putstr(s);
+    putc(10);
+    print_i64(len(s));
+    return 0;
+}

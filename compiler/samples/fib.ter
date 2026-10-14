@@ -1,0 +1,15 @@
+// Loop + arithmetic sample: after 10 updates b = 89 (the 11th Fibonacci value).
+fn main() -> i64 {
+    var a: i64 = 0;
+    var b: i64 = 1;
+    var i: i64 = 0;
+    while i < 10 {
+        let t: i64 = a + b;
+        a = b;
+        b = t;
+        i = i + 1;
+    }
+    print_str("fib(10) =");
+    print_i64(b);
+    return 0;
+}

@@ -1,0 +1,7 @@
+[package]
+name = "tessera_diag"
+version = "0.1.0"
+edition = "2021"
+description = "Tessera diagnostics: line/column mapping and snippet rendering"
+
+[dependencies]

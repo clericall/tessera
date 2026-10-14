@@ -1,0 +1,507 @@
+// ---------------------------------------------------------------------------
+// Tessera chess engine — E1 (movegen + make + copy-make perft).
+// 10x10 mailbox: index = rank*10 + file. Ranks 0..11 (valid 2..9), files 0..9
+// (valid 1..8); the ring is the off-mailbox sentinel OFFB. Pieces signed by
+// side (+White, -Black). 0 empty. Types 1 P, 2 N, 3 B, 4 R, 5 Q, 6 K.
+// White advances +10, Black -10. Home squares: e1=25, e8=95, a1=21, h1=28,
+// a8=91, h8=98.
+// ---------------------------------------------------------------------------
+
+const OFFB: i64 = 97;
+const PAWN: i64 = 1;
+const KNIGHT: i64 = 2;
+const BISHOP: i64 = 3;
+const ROOK: i64 = 4;
+const QUEEN: i64 = 5;
+const KING: i64 = 6;
+const WKC: i64 = 1;
+const WQC: i64 = 2;
+const BKC: i64 = 4;
+const BQC: i64 = 8;
+const MAXR: i64 = 120;
+const BAND: i64 = 256;
+
+struct Position {
+    mail: [i64; MAXR],
+    stm: i64,
+    ep: i64,
+    castle: i64,
+    kings: [i64; 2],
+}
+
+static GMV: [i64; 8192] = [0; 8192];
+static GCOUNT: i64 = 0;
+static GBASE: i64 = 0;
+
+fn ab(x: i64) -> i64 { if x < 0 { return 0 - x; } return x; }
+fn colr(p: i64) -> i64 { if p > 0 { return 0; } if p < 0 { return 1; } return 2; }
+fn fwd_of(col: i64) -> i64 { var f: i64 = 10; if col != 0 { f = 0 - 10; } return f; }
+
+fn onboard(sq: i64) -> bool {
+    if sq < 0 { return false; }
+    if sq >= MAXR { return false; }
+    let f: i64 = sq % 10;
+    let r: i64 = sq / 10;
+    return f >= 1 && f <= 8 && r >= 2 && r <= 9;
+}
+fn ndel(k: i64) -> i64 {
+    if k == 0 { return 8; } if k == 1 { return 12; }
+    if k == 2 { return 19; } if k == 3 { return 21; }
+    if k == 4 { return 0 - 8; } if k == 5 { return 0 - 12; }
+    if k == 6 { return 0 - 19; } return 0 - 21;
+}
+fn rd(i: i64) -> i64 {
+    if i == 0 { return 11; } if i == 1 { return 10; }
+    if i == 2 { return 9; } if i == 3 { return 1; }
+    if i == 4 { return 0 - 1; } if i == 5 { return 0 - 9; }
+    if i == 6 { return 0 - 10; } return 0 - 11;
+}
+fn diagb(d: i64) -> bool { return d == 9 || d == 11 || d == 0 - 9 || d == 0 - 11; }
+
+// Is square `sq` attacked by side `by` (0 White / 1 Black)?
+fn attacked(pos: Position, sq: i64, by: i64) -> bool {
+    if by == 0 {
+        if onboard(sq - 9) && pos.mail[sq - 9] == PAWN { return true; }
+        if onboard(sq - 11) && pos.mail[sq - 11] == PAWN { return true; }
+    } else {
+        if onboard(sq + 9) && pos.mail[sq + 9] == 0 - PAWN { return true; }
+        if onboard(sq + 11) && pos.mail[sq + 11] == 0 - PAWN { return true; }
+    }
+    var d: i64 = 0;
+    while d < 8 {
+        let t: i64 = sq + ndel(d);
+        if onboard(t) {
+            var v: i64 = 0;
+            if by == 0 { v = KNIGHT; } else { v = 0 - KNIGHT; }
+            if pos.mail[t] == v { return true; }
+        }
+        d += 1;
+    }
+    var k: i64 = 0;
+    while k < 8 {
+        let t2: i64 = sq + rd(k);
+        if onboard(t2) {
+            var v2: i64 = 0;
+            if by == 0 { v2 = KING; } else { v2 = 0 - KING; }
+            if pos.mail[t2] == v2 { return true; }
+        }
+        k += 1;
+    }
+    var dir: i64 = 0;
+    while dir < 8 {
+        let q: i64 = rd(dir);
+        let dg: bool = diagb(q);
+        var t3: i64 = sq + q;
+        while onboard(t3) {
+            let p: i64 = pos.mail[t3];
+            if p != 0 && p != OFFB {
+                if colr(p) == by {
+                    let a: i64 = ab(p);
+                    if a == QUEEN { return true; }
+                    if dg && a == BISHOP { return true; }
+                    if (!dg) && a == ROOK { return true; }
+                }
+                break;
+            }
+            t3 += q;
+        }
+        dir += 1;
+    }
+    return false;
+}
+
+// ---- move generation (pseudo-legal), appended into GMV[GBASE..] -----------
+
+fn add_mv(f: i64, t: i64, promo: i64) {
+    let mv: i64 = f * 1000000 + t * 1000 + promo;
+    GMV[GBASE + GCOUNT] = mv;
+    GCOUNT += 1;
+}
+fn add_promo(sq: i64, t: i64) {
+    add_mv(sq, t, QUEEN);
+    add_mv(sq, t, ROOK);
+    add_mv(sq, t, BISHOP);
+    add_mv(sq, t, KNIGHT);
+}
+fn emit_pawn(sq: i64, t: i64, col: i64) {
+    if col == 0 {
+        if t >= 91 && t <= 98 { add_promo(sq, t); return; }
+    } else {
+        if t >= 21 && t <= 28 { add_promo(sq, t); return; }
+    }
+    add_mv(sq, t, 0);
+}
+fn step_dir(c: Position, sq: i64, d: i64, col: i64) {
+    let t: i64 = sq + d;
+    if onboard(t) {
+        let p: i64 = c.mail[t];
+        if p == 0 || colr(p) != col { add_mv(sq, t, 0); }
+    }
+}
+fn slide_dir(c: Position, sq: i64, d: i64, col: i64) {
+    var t: i64 = sq + d;
+    while onboard(t) {
+        let p: i64 = c.mail[t];
+        if p != 0 && p != OFFB {
+            if colr(p) != col { add_mv(sq, t, 0); }
+            return;
+        }
+        add_mv(sq, t, 0);
+        t += d;
+    }
+}
+fn can_attacked(c: Position, a: i64, b: i64, col: i64) -> bool {
+    // helper: neither a nor b attacked by side (1-col)
+    let foe: i64 = 1 - col;
+    return !attacked(c, a, foe) && !attacked(c, b, foe);
+}
+
+fn gen_pawn(c: Position, sq: i64, col: i64) {
+    let fwd: i64 = fwd_of(col);
+    let one: i64 = sq + fwd;
+    if onboard(one) && c.mail[one] == 0 {
+        emit_pawn(sq, one, col);
+        var start: i64 = 31;
+        if col != 0 { start = 81; }
+        if sq >= start && sq <= start + 7 {
+            let two: i64 = sq + fwd + fwd;
+            if onboard(two) && c.mail[two] == 0 { add_mv(sq, two, 0); }
+        }
+    }
+    let cl: i64 = sq + fwd - 1;
+    let cr: i64 = sq + fwd + 1;
+    if onboard(cl) {
+        let t: i64 = c.mail[cl];
+        if t != 0 && colr(t) != col { emit_pawn(sq, cl, col); }
+        if t == 0 && cl == c.ep { add_mv(sq, cl, 0); }
+    }
+    if onboard(cr) {
+        let t2: i64 = c.mail[cr];
+        if t2 != 0 && colr(t2) != col { emit_pawn(sq, cr, col); }
+        if t2 == 0 && cr == c.ep { add_mv(sq, cr, 0); }
+    }
+}
+
+fn gen_king(c: Position, sq: i64, col: i64) {
+    var k: i64 = 0;
+    while k < 8 { step_dir(c, sq, rd(k), col); k += 1; }
+    if col == 0 && sq == 25 {
+        if (c.castle & WKC) != 0 {
+            if c.mail[26] == 0 && c.mail[27] == 0 && c.mail[28] == ROOK {
+                if !attacked(c, 25, 1) && !attacked(c, 26, 1) && !attacked(c, 27, 1) {
+                    add_mv(25, 27, 0);
+                }
+            }
+        }
+        if (c.castle & WQC) != 0 {
+            if c.mail[24] == 0 && c.mail[23] == 0 && c.mail[22] == 0 && c.mail[21] == ROOK {
+                if !attacked(c, 25, 1) && !attacked(c, 24, 1) && !attacked(c, 23, 1) {
+                    add_mv(25, 23, 0);
+                }
+            }
+        }
+    }
+    if col == 1 && sq == 95 {
+        if (c.castle & BKC) != 0 {
+            if c.mail[96] == 0 && c.mail[97] == 0 && c.mail[98] == 0 - ROOK {
+                if !attacked(c, 95, 0) && !attacked(c, 96, 0) && !attacked(c, 97, 0) {
+                    add_mv(95, 97, 0);
+                }
+            }
+        }
+        if (c.castle & BQC) != 0 {
+            if c.mail[94] == 0 && c.mail[93] == 0 && c.mail[92] == 0 && c.mail[91] == 0 - ROOK {
+                if !attacked(c, 95, 0) && !attacked(c, 94, 0) && !attacked(c, 93, 0) {
+                    add_mv(95, 93, 0);
+                }
+            }
+        }
+    }
+}
+
+fn gen_piece(c: Position, sq: i64, p: i64, col: i64) {
+    let pt: i64 = ab(p);
+    if pt == PAWN { gen_pawn(c, sq, col); return; }
+    if pt == KNIGHT {
+        var k: i64 = 0;
+        while k < 8 { step_dir(c, sq, ndel(k), col); k += 1; }
+        return;
+    }
+    if pt == KING { gen_king(c, sq, col); return; }
+    if pt == BISHOP {
+        slide_dir(c, sq, 9, col); slide_dir(c, sq, 11, col);
+        slide_dir(c, sq, 0 - 9, col); slide_dir(c, sq, 0 - 11, col);
+        return;
+    }
+    if pt == ROOK {
+        slide_dir(c, sq, 10, col); slide_dir(c, sq, 0 - 10, col);
+        slide_dir(c, sq, 1, col); slide_dir(c, sq, 0 - 1, col);
+        return;
+    }
+    if pt == QUEEN {
+        slide_dir(c, sq, 11, col); slide_dir(c, sq, 9, col);
+        slide_dir(c, sq, 0 - 9, col); slide_dir(c, sq, 0 - 11, col);
+        slide_dir(c, sq, 10, col); slide_dir(c, sq, 0 - 10, col);
+        slide_dir(c, sq, 1, col); slide_dir(c, sq, 0 - 1, col);
+        return;
+    }
+}
+
+fn gen(c: Position, ply: i64) -> i64 {
+    GBASE = ply * BAND;
+    GCOUNT = 0;
+    var sq: i64 = 0;
+    while sq < MAXR {
+        if onboard(sq) {
+            let p: i64 = c.mail[sq];
+            if p != 0 && colr(p) == c.stm { gen_piece(c, sq, p, c.stm); }
+        }
+        sq += 1;
+    }
+    return GCOUNT;
+}
+
+// ---- make (copy-make): returns the child position --------------------------
+
+fn make(pos: Position, mv: i64) -> Position {
+    var c: Position = pos;
+    let f: i64 = mv / 1000000;
+    let t2: i64 = (mv / 1000) % 1000;
+    let promo: i64 = mv % 1000;
+    let piece: i64 = pos.mail[f];
+    let pt: i64 = ab(piece);
+    let col: i64 = colr(piece);
+    c.mail[f] = 0;
+    if pt == PAWN && t2 == pos.ep && pos.mail[t2] == 0 {
+        let capsq: i64 = t2 - fwd_of(col);
+        c.mail[capsq] = 0;
+    }
+    if promo != 0 {
+        var np: i64 = promo;
+        if col != 0 { np = 0 - promo; }
+        c.mail[t2] = np;
+    } else {
+        c.mail[t2] = piece;
+    }
+    if pt == KING {
+        if ab(t2 - f) == 2 {
+            if t2 > f {
+                c.mail[f + 1] = c.mail[f + 3];
+                c.mail[f + 3] = 0;
+            } else {
+                c.mail[f - 1] = c.mail[f - 4];
+                c.mail[f - 4] = 0;
+            }
+        }
+        c.kings[col] = t2;
+    }
+    var cr: i64 = pos.castle;
+    if f == 25 || t2 == 25 { cr = cr & 12; }
+    if f == 95 || t2 == 95 { cr = cr & 3; }
+    if f == 21 || t2 == 21 { cr = cr & 13; }
+    if f == 28 || t2 == 28 { cr = cr & 14; }
+    if f == 91 || t2 == 91 { cr = cr & 7; }
+    if f == 98 || t2 == 98 { cr = cr & 11; }
+    c.castle = cr;
+    if pt == PAWN && ab(t2 - f) == 20 {
+        c.ep = (f + t2) / 2;
+    } else {
+        c.ep = 99;
+    }
+    c.stm = 1 - pos.stm;
+    return c;
+}
+
+fn king_safe(c: Position, col: i64) -> bool {
+    let k: i64 = c.kings[col];
+    return !attacked(c, k, 1 - col);
+}
+
+fn gperft(pos: Position, depth: i64, ply: i64) -> i64 {
+    if depth == 0 { return 1; }
+    let n: i64 = gen(pos, ply);
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let mv: i64 = GMV[ply * BAND + i];
+        let child: Position = make(pos, mv);
+        if king_safe(child, pos.stm) {
+            if depth == 1 {
+                total = total + 1;
+            } else {
+                total = total + gperft(child, depth - 1, ply + 1);
+            }
+        }
+        i += 1;
+    }
+    return total;
+}
+
+// ---- positions -------------------------------------------------------------
+
+fn make_empty() -> Position {
+    var p: Position = Position { mail: [0; MAXR], stm: 0, ep: 99, castle: 0, kings: [25, 95] };
+    var f: i64 = 0;
+    while f <= 9 {
+        p.mail[f] = OFFB;
+        p.mail[10 + f] = OFFB;
+        p.mail[100 + f] = OFFB;
+        p.mail[110 + f] = OFFB;
+        f += 1;
+    }
+    var r: i64 = 2;
+    while r <= 9 {
+        p.mail[r * 10] = OFFB;
+        p.mail[r * 10 + 9] = OFFB;
+        r += 1;
+    }
+    return p;
+}
+
+fn setup_start() -> Position {
+    var p: Position = make_empty();
+    p.mail[21] = ROOK; p.mail[22] = KNIGHT; p.mail[23] = BISHOP; p.mail[24] = QUEEN;
+    p.mail[25] = KING; p.mail[26] = BISHOP; p.mail[27] = KNIGHT; p.mail[28] = ROOK;
+    p.mail[91] = 0 - ROOK; p.mail[92] = 0 - KNIGHT; p.mail[93] = 0 - BISHOP; p.mail[94] = 0 - QUEEN;
+    p.mail[95] = 0 - KING; p.mail[96] = 0 - BISHOP; p.mail[97] = 0 - KNIGHT; p.mail[98] = 0 - ROOK;
+    var f: i64 = 1;
+    while f <= 8 { p.mail[30 + f] = PAWN; p.mail[80 + f] = 0 - PAWN; f += 1; }
+    p.stm = 0;
+    p.ep = 99;
+    p.castle = WKC | WQC | BKC | BQC;
+    p.kings[0] = 25;
+    p.kings[1] = 95;
+    return p;
+}
+
+fn setup_kiwipete() -> Position {
+    var p: Position = make_empty();
+    p.mail[21] = ROOK; p.mail[25] = KING; p.mail[28] = ROOK;
+    p.mail[31] = PAWN; p.mail[32] = PAWN; p.mail[33] = PAWN;
+    p.mail[34] = BISHOP; p.mail[35] = BISHOP;
+    p.mail[36] = PAWN; p.mail[37] = PAWN; p.mail[38] = PAWN;
+    p.mail[43] = KNIGHT; p.mail[46] = QUEEN; p.mail[48] = 0 - PAWN;
+    p.mail[52] = 0 - PAWN; p.mail[55] = PAWN;
+    p.mail[64] = PAWN; p.mail[65] = KNIGHT;
+    p.mail[71] = 0 - BISHOP; p.mail[72] = 0 - KNIGHT; p.mail[75] = 0 - PAWN; p.mail[76] = 0 - KNIGHT; p.mail[77] = 0 - PAWN;
+    p.mail[81] = 0 - PAWN; p.mail[83] = 0 - PAWN; p.mail[84] = 0 - PAWN; p.mail[85] = 0 - QUEEN; p.mail[86] = 0 - PAWN; p.mail[87] = 0 - BISHOP;
+    p.mail[91] = 0 - ROOK; p.mail[95] = 0 - KING; p.mail[98] = 0 - ROOK;
+    p.stm = 0;
+    p.ep = 99;
+    p.castle = WKC | WQC | BKC | BQC;
+    p.kings[0] = 25;
+    p.kings[1] = 95;
+    return p;
+}
+
+fn setup_pos3() -> Position {
+    var p: Position = make_empty();
+    p.mail[83] = 0 - PAWN; // c7
+    p.mail[74] = 0 - PAWN; // d6
+    p.mail[61] = KING;     // Ka5
+    p.mail[62] = PAWN;     // Pb5
+    p.mail[68] = 0 - ROOK; // Rh5
+    p.mail[52] = ROOK;     // Rb4
+    p.mail[56] = 0 - PAWN; // f4
+    p.mail[58] = 0 - KING; // h4
+    p.mail[35] = PAWN;     // e2
+    p.mail[37] = PAWN;     // g2
+    p.stm = 0;
+    p.ep = 99;
+    p.castle = 0;
+    p.kings[0] = 61;
+    p.kings[1] = 58;
+    return p;
+}
+
+fn fen_to_piece(ch: i64) -> i64 {
+    if ch == 80 { return PAWN; }
+    if ch == 78 { return KNIGHT; }
+    if ch == 66 { return BISHOP; }
+    if ch == 82 { return ROOK; }
+    if ch == 81 { return QUEEN; }
+    if ch == 75 { return KING; }
+    if ch == 112 { return 0 - PAWN; }
+    if ch == 110 { return 0 - KNIGHT; }
+    if ch == 98 { return 0 - BISHOP; }
+    if ch == 114 { return 0 - ROOK; }
+    if ch == 113 { return 0 - QUEEN; }
+    if ch == 107 { return 0 - KING; }
+    return 0;
+}
+
+fn from_fen(fen: str) -> Position {
+    var p: Position = make_empty();
+    var idx: i64 = 0;
+    var fr: i64 = 8;              // FEN ranks 8..1
+    while fr >= 1 {
+        let row: i64 = fr + 1;    // FEN rank r -> mailbox row r+1
+        var file: i64 = 1;
+        while file <= 8 {
+            let ch: i64 = fen[idx];
+            idx = idx + 1;
+            if ch >= 49 && ch <= 56 {
+                file = file + (ch - 48);   // '1'..'8'
+            } else {
+                let sq: i64 = row * 10 + file;
+                let piece: i64 = fen_to_piece(ch);
+                p.mail[sq] = piece;
+                if piece == KING { p.kings[0] = sq; }
+                if piece == 0 - KING { p.kings[1] = sq; }
+                file = file + 1;
+            }
+        }
+        if fr > 1 { idx = idx + 1; }        // consume '/'
+        fr = fr - 1;
+    }
+    idx = idx + 1;                          // space before side to move
+    let stmch: i64 = fen[idx];
+    idx = idx + 1;
+    if stmch == 98 { p.stm = 1; } else { p.stm = 0; }   // 'b' = Black
+    idx = idx + 1;                          // space
+    var castle: i64 = 0;
+    while idx <= len(fen) - 1 && fen[idx] != 32 {
+        let cm: i64 = fen[idx];
+        if cm == 75 { castle = castle | 1; }   // K
+        if cm == 81 { castle = castle | 2; }   // Q
+        if cm == 107 { castle = castle | 4; }  // k
+        if cm == 113 { castle = castle | 8; }  // q
+        idx = idx + 1;
+    }
+    p.castle = castle;
+    idx = idx + 1;                          // space
+    if fen[idx] == 45 {                     // '-'
+        p.ep = 99;
+        idx = idx + 1;
+    } else {
+        let ef: i64 = fen[idx] - 96;         // 'a'..'h' -> 1..8
+        let er: i64 = fen[idx + 1] - 48;     // '1'..'8'
+        p.ep = (er + 1) * 10 + ef;
+        idx = idx + 2;
+    }
+    return p;
+}
+
+fn run_fen(fen: str, d: i64) -> i64 {
+    let p: Position = from_fen(fen);
+    return gperft(p, d, 0);
+}
+
+fn main() -> i64 {
+    print_str("start FEN (20 400 8902 197281):");
+    print_i64(run_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 1));
+    print_i64(run_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 2));
+    print_i64(run_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 3));
+    print_i64(run_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4));
+    print_str("kiwipete FEN (48 2039 97862 4085603):");
+    print_i64(run_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 1));
+    print_i64(run_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 2));
+    print_i64(run_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3));
+    print_i64(run_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 4));
+    print_str("pos3 FEN (14 191 2812 43238):");
+    print_i64(run_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 1));
+    print_i64(run_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 2));
+    print_i64(run_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 3));
+    print_i64(run_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4));
+    return 0;
+}

@@ -1,0 +1,12 @@
+[package]
+name = "tesserac"
+version = "0.1.0"
+edition = "2021"
+description = "The Tessera compiler driver"
+
+[dependencies]
+tessera_lexer = { path = "../tessera_lexer" }
+tessera_diag = { path = "../tessera_diag" }
+tessera_parser = { path = "../tessera_parser" }
+tessera_check = { path = "../tessera_check" }
+tessera_backend_c = { path = "../tessera_backend_c" }

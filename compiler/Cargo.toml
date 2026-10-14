@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tesserac",
+    "crates/tessera_lexer",
+    "crates/tessera_diag",
+    "crates/tessera_ast",
+    "crates/tessera_parser",
+    "crates/tessera_check",
+    "crates/tessera_backend_c",
+]
+
+# Speed up incremental builds a little.
+[profile.dev]
+opt-level = 0
+debug = false

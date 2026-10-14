@@ -1,0 +1,25 @@
+static SEVEN: i64 = 7;
+static ACC: i64 = 0;
+static MASK: [i64; 4] = [1, 2, 4, 8];
+
+fn bump(k: i64) -> i64 {
+    ACC = ACC + k;
+    return ACC;
+}
+
+fn sum_mask() -> i64 {
+    var s: i64 = 0;
+    for i in 0..4 {
+        s = s + MASK[i];
+    }
+    return s;
+}
+
+fn main() -> i64 {
+    print_i64(SEVEN);       // 7
+    print_i64(bump(5));     // 5
+    print_i64(bump(3));     // 8
+    print_i64(sum_mask());  // 15
+    print_i64(ACC);         // 8
+    return 0;
+}

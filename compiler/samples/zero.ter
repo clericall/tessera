@@ -1,0 +1,11 @@
+static BIG: [i64; 200000] = [0; 200000];
+static N: [i64; 8] = [0; 8];
+
+fn main() -> i64 {
+    BIG[199999] = 42;
+    N[3] = 7;
+    print_i64(BIG[199999]);  // 42
+    print_i64(BIG[0]);       // 0 (zero-filled)
+    print_i64(N[3]);         // 7
+    return 0;
+}

@@ -1,0 +1,24 @@
+struct Board {
+    pieces: [u64; 2],
+    count: i64,
+}
+
+fn make(n: i64) -> Board {
+    let out: Board = Board { pieces: [n, n * 2], count: n };
+    return out;
+}
+
+fn total(b: Board) -> i64 {
+    return b.pieces[0] + b.pieces[1] + b.count;
+}
+
+fn main() -> i64 {
+    var b: Board = make(6);
+    b.pieces[0] = b.pieces[1] + 1;   // nested place assign: b.pieces[0]
+    b.count = b.count + b.pieces[0]; // field assign using index read
+    print_i64(b.count);              // 6 + (12+1) = 19
+    print_i64(b.pieces[0]);          // 13
+    print_i64(popcount(b.pieces[1]));// popcount(12) = 2
+    print_i64(total(b));             // 13 + 12 + 19 = 44
+    return 0;
+}

@@ -1,0 +1,14 @@
+fn main() -> i64 {
+    let s: str = "HELLO";
+    print_i64(len(s));                 // 5
+    var sum: i64 = 0;
+    var i: i64 = 0;
+    while i < len(s) {
+        sum = sum + s[i];              // ASCII byte at i
+        i = i + 1;
+    }
+    print_i64(sum);                    // H+E+L+L+O = 372
+    if s[0] == 'H' { print_str("first is H"); }
+    if s[4] == 'O' { print_str("last is O"); }
+    return 0;
+}
