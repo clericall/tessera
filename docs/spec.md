@@ -88,6 +88,29 @@ follow two's complement; **wrap on overflow** (matches zobrist/hash expectations
   fallback** and may also be runtime-dispatched. Magic bitboards on Tier A/B use classic (non-PEXT) magics.
 - `cpu_has("avx2"|"bmi2"|…) -> bool` — runtime feature query for single-binary dispatch.
 
+### 7.1 I/O builtins (implemented)
+Standard streams: `read_line() -> str`, `putstr(str)`, `putc(i64)`, `putint(i64)`, `flush()`,
+`now_ms() -> i64`.
+
+Binary file reads (little-endian, sequential; needed to load NNUE weight files):
+
+| builtin | signature | notes |
+|---|---|---|
+| `fopen` | `fopen(path: str) -> i64` | returns a handle, or `-1` if the file cannot be opened |
+| `fread_u8` | `fread_u8(h: i64) -> i64` | `0..255`, or `-1` at EOF/error |
+| `fread_i16` | `fread_i16(h: i64) -> i64` | sign-extended `i16` |
+| `fread_i32` | `fread_i32(h: i64) -> i64` | sign-extended `i32` |
+| `feof` | `feof(h: i64) -> bool` | true once the stream is exhausted (or `h < 0`) |
+| `fclose` | `fclose(h: i64) -> i64` | `0` on success, `-1` for an invalid handle |
+
+EOF is signalled by `-1` **and** by `feof`; `fread_i16`/`fread_i32` cannot use `-1` alone as a
+sentinel because it is a legitimate value of those ranges. Reads are unbuffered from the language's
+point of view — a short read yields `-1` rather than partially-filled data.
+
+`fopen` takes a length-aware `str` (the bytes are copied into a NUL-terminated
+buffer), so `fopen(substr(line, i, n))` works. The string builtin `substr(s, start, len) -> str`
+returns a view into `s` and clamps out-of-range arguments.
+
 ## 8. Compile-time evaluation
 - `const fn` must be **pure** (no I/O, no mutation of `static`/outer state, no external calls);
   recursion allowed, depth-capped by the compiler.

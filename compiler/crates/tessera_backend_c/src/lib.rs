@@ -24,6 +24,50 @@ static Tr_str tr_read_line(void){
 }
 static void tr_put_i64(int64_t x){ char b[32]; sprintf(b, "%lld", (long long)x); fputs(b, stdout); }
 static int64_t tr_now_ms(void){ return (int64_t)clock(); } /* ms on CLOCKS_PER_SEC==1000 targets */
+/* --- file I/O (sequential binary reads; NNUE weight files) --- */
+static int64_t tr_fopen(Tr_str s){
+    char buf[4096];
+    int64_t n = s.n; if (n > 4095) n = 4095; if (n < 0) n = 0;
+    for (int64_t i = 0; i < n; i++) buf[i] = s.p[i];
+    buf[n] = 0;
+    FILE* f = fopen(buf, "rb");
+    return f ? (int64_t)(intptr_t)f : -1;
+}
+static Tr_str tr_substr(Tr_str s, int64_t from, int64_t n){
+    Tr_str r;
+    if (from < 0) from = 0; if (from > s.n) from = s.n;
+    if (n < 0) n = 0; if (from + n > s.n) n = s.n - from;
+    r.p = s.p + from; r.n = n;
+    return r;
+}
+static int64_t tr_fread_u8(int64_t h){
+    if (h < 0) return -1;
+    unsigned char b;
+    if (fread(&b, 1, 1, (FILE*)(intptr_t)h) != 1) return -1;
+    return (int64_t)b;
+}
+static int64_t tr_fread_i16(int64_t h){
+    if (h < 0) return -1;
+    unsigned char b[2];
+    if (fread(b, 1, 2, (FILE*)(intptr_t)h) != 2) return -1;
+    uint16_t u = (uint16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
+    return (int64_t)(int16_t)u;
+}
+static int64_t tr_fread_i32(int64_t h){
+    if (h < 0) return -1;
+    unsigned char b[4];
+    if (fread(b, 1, 4, (FILE*)(intptr_t)h) != 4) return -1;
+    uint32_t u = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    return (int64_t)(int32_t)u;
+}
+static bool tr_feof(int64_t h){
+    if (h < 0) return true;
+    return feof((FILE*)(intptr_t)h) != 0;
+}
+static int64_t tr_fclose(int64_t h){
+    if (h < 0) return -1;
+    return (int64_t)fclose((FILE*)(intptr_t)h);
+}
 /* Bitboard occupancy-index selection: hardware pext under -mbmi2 (Tier C), plain shift otherwise. */
 #ifdef __BMI2__
 static inline int64_t tr_bbidx(uint64_t occ, uint64_t mask, int64_t shift){ return (int64_t)__builtin_ia32_pext_di(occ, mask); }
@@ -206,6 +250,13 @@ fn emit_call(func: &str, args: &[Expr]) -> String {
         "putc" => format!("(putchar((int)({})))", a0()),
         "putint" => format!("(tr_put_i64((int64_t)({})))", a0()),
         "now_ms" => "(tr_now_ms())".into(),
+        "fopen" => format!("(tr_fopen({}))", a0()),
+        "substr" => format!("(tr_substr({}, {}, {}))", a0(), a1(), a2()),
+        "fread_u8" => format!("(tr_fread_u8((int64_t)({})))", a0()),
+        "fread_i16" => format!("(tr_fread_i16((int64_t)({})))", a0()),
+        "fread_i32" => format!("(tr_fread_i32((int64_t)({})))", a0()),
+        "feof" => format!("(tr_feof((int64_t)({})))", a0()),
+        "fclose" => format!("(tr_fclose((int64_t)({})))", a0()),
         "flush" => "(fflush(stdout))".into(),
         "btable_index" => format!("(tr_bbidx((uint64_t)({}), (uint64_t)({}), ({})))", a0(), a1(), a2()),
         "len" => format!("(({}).n)", a0()),

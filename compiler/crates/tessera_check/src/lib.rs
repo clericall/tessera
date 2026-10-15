@@ -819,12 +819,12 @@ impl Checker {
         };
         match name.as_str() {
             "popcount" | "ctz" | "clz" => {
-                self.expect_arity(&name, args, 1);
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
                 let a = coerce(self.check_expr(&args[0], Some(&Type::u64())), &Type::u64());
                 ExprKind::Call { func: name, args: vec![a] }.typed(Type::i32(), sp)
             }
             "print_i64" | "print_uint" | "print_bool" => {
-                self.expect_arity(&name, args, 1);
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
                 let want = if name == "print_bool" { Type::Bool } else { Type::i64() };
                 let a = self.check_expr(&args[0], Some(&want));
                 ExprKind::Call { func: name, args: vec![a] }.typed(Type::Unit, sp)
@@ -843,18 +843,18 @@ impl Checker {
                 unit_expr(sp)
             }
             "putstr" => {
-                self.expect_arity(&name, args, 1);
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
                 let a = self.check_expr(&args[0], Some(&Type::Str));
                 if a.ty != Type::Str { self.err(args[0].span, "`putstr` expects a string", None); }
                 ExprKind::Call { func: name, args: vec![a] }.typed(Type::Unit, sp)
             }
             "putc" => {
-                self.expect_arity(&name, args, 1);
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
                 let a = self.check_expr(&args[0], Some(&Type::i64()));
                 ExprKind::Call { func: name, args: vec![a] }.typed(Type::Unit, sp)
             }
             "putint" => {
-                self.expect_arity(&name, args, 1);
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
                 let a = self.check_expr(&args[0], Some(&Type::i64()));
                 ExprKind::Call { func: name, args: vec![a] }.typed(Type::Unit, sp)
             }
@@ -866,19 +866,48 @@ impl Checker {
                 if !args.is_empty() { self.err(sp, "`now_ms` takes no arguments", None); }
                 ExprKind::Call { func: name, args: vec![] }.typed(Type::i64(), sp)
             }
+            "fopen" => {
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
+                let a = self.check_expr(&args[0], Some(&Type::Str));
+                if a.ty != Type::Str { self.err(args[0].span, "`fopen` expects a string path", None); }
+                ExprKind::Call { func: name, args: vec![a] }.typed(Type::i64(), sp)
+            }
+            "substr" => {
+                if !self.expect_arity(&name, args, 3) { return unit_expr(sp); }
+                let s = self.check_expr(&args[0], Some(&Type::Str));
+                if s.ty != Type::Str { self.err(args[0].span, "`substr` expects a string", None); }
+                let a = self.check_expr(&args[1], Some(&Type::i64()));
+                let n = self.check_expr(&args[2], Some(&Type::i64()));
+                ExprKind::Call { func: name, args: vec![s, a, n] }.typed(Type::Str, sp)
+            }
+            "fread_u8" | "fread_i16" | "fread_i32" => {
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
+                let a = self.check_expr(&args[0], Some(&Type::i64()));
+                ExprKind::Call { func: name, args: vec![a] }.typed(Type::i64(), sp)
+            }
+            "feof" => {
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
+                let a = self.check_expr(&args[0], Some(&Type::i64()));
+                ExprKind::Call { func: name, args: vec![a] }.typed(Type::Bool, sp)
+            }
+            "fclose" => {
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
+                let a = self.check_expr(&args[0], Some(&Type::i64()));
+                ExprKind::Call { func: name, args: vec![a] }.typed(Type::i64(), sp)
+            }
             "flush" => {
                 if !args.is_empty() { self.err(sp, "`flush` takes no arguments", None); }
                 ExprKind::Call { func: name, args: vec![] }.typed(Type::Unit, sp)
             }
             "btable_index" => {
-                self.expect_arity(&name, args, 3);
+                if !self.expect_arity(&name, args, 3) { return unit_expr(sp); }
                 let o = self.check_expr(&args[0], Some(&Type::u64()));
                 let m = self.check_expr(&args[1], Some(&Type::u64()));
                 let s = self.check_expr(&args[2], Some(&Type::i64()));
                 ExprKind::Call { func: name, args: vec![o, m, s] }.typed(Type::i64(), sp)
             }
             "len" => {
-                self.expect_arity(&name, args, 1);
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
                 let a = self.check_expr(&args[0], Some(&Type::Str));
                 if a.ty != Type::Str {
                     self.err(args[0].span, "`len` expects a string", None);
@@ -909,11 +938,16 @@ impl Checker {
         }
     }
 
-    fn expect_arity(&mut self, name: &str, args: &[a::Expr], n: usize) {
+    /// Reports an arity mismatch and returns false so callers can bail out
+    /// instead of indexing past the end of `args` (a wrong-arity builtin call
+    /// must be a diagnostic, never a compiler panic).
+    fn expect_arity(&mut self, name: &str, args: &[a::Expr], n: usize) -> bool {
         if args.len() != n {
             let sp = args.get(0).map(|x| x.span).unwrap_or(Span::new(0, 0));
             self.err(sp, format!("`{name}` takes {n} argument(s)"), None);
+            return false;
         }
+        true
     }
 
     fn check_block(&mut self, b: &a::Block) -> Block {

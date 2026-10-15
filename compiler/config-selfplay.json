@@ -1,0 +1,152 @@
+﻿{
+    "resign":  {
+                   "move_count":  1,
+                   "score":  0,
+                   "twosided":  false,
+                   "enabled":  false
+               },
+    "draw":  {
+                 "move_number":  0,
+                 "move_count":  1,
+                 "score":  0,
+                 "enabled":  false
+             },
+    "maxmoves":  {
+                     "move_count":  1,
+                     "enabled":  false
+                 },
+    "tb_adjudication":  {
+                            "syzygy_dirs":  "",
+                            "max_pieces":  0,
+                            "ignore_50_move_rule":  false,
+                            "enabled":  false
+                        },
+    "opening":  {
+                    "file":  "engine/book.epd",
+                    "format":  0,
+                    "order":  0,
+                    "plies":  -1,
+                    "start":  1
+                },
+    "pgn":  {
+                "additional_lines_rgx":  [
+
+                                         ],
+                "event_name":  "Fastchess Tournament",
+                "site":  "?",
+                "file":  "",
+                "notation":  0,
+                "append_file":  true,
+                "track_nodes":  false,
+                "track_seldepth":  false,
+                "track_nps":  false,
+                "track_hashfull":  false,
+                "track_tbhits":  false,
+                "track_timeleft":  false,
+                "track_latency":  false,
+                "track_pv":  false,
+                "min":  false,
+                "crc":  false
+            },
+    "epd":  {
+                "file":  "",
+                "append_file":  true
+            },
+    "sprt":  {
+                 "alpha":  0.0,
+                 "beta":  0.0,
+                 "elo0":  0.0,
+                 "elo1":  0.0,
+                 "model":  "normalized",
+                 "enabled":  false
+             },
+    "config_name":  "config.json",
+    "output":  0,
+    "seed":  14499130763406987109,
+    "variant":  0,
+    "type":  0,
+    "gauntlet_seeds":  1,
+    "ratinginterval":  10,
+    "scoreinterval":  1,
+    "wait":  0,
+    "autosaveinterval":  20,
+    "games":  1,
+    "rounds":  4000,
+    "concurrency":  2,
+    "force_concurrency":  false,
+    "recover":  false,
+    "noswap":  false,
+    "reverse":  false,
+    "report_penta":  true,
+    "affinity":  false,
+    "check_mate_pvs":  false,
+    "show_latency":  false,
+    "log":  {
+                "file":  "",
+                "level":  3,
+                "append_file":  true,
+                "compress":  false,
+                "realtime":  true,
+                "engine_coms":  false
+            },
+    "engines":  [
+                    {
+                        "name":  "Tessera-w",
+                        "dir":  "",
+                        "cmd":  "compiler/samples/bbuci.exe",
+                        "args":  "",
+                        "restart":  false,
+                        "options":  [
+                                        [
+                                            "Threads",
+                                            "1"
+                                        ],
+                                        [
+                                            "Hash",
+                                            "16"
+                                        ]
+                                    ],
+                        "limit":  {
+                                      "tc":  {
+                                                 "increment":  10,
+                                                 "fixed_time":  0,
+                                                 "time":  60000,
+                                                 "moves":  0,
+                                                 "timemargin":  0
+                                             },
+                                      "nodes":  30000,
+                                      "plies":  0
+                                  },
+                        "variant":  0
+                    },
+                    {
+                        "name":  "Tessera-b",
+                        "dir":  "",
+                        "cmd":  "compiler/samples/bbuci.exe",
+                        "args":  "",
+                        "restart":  false,
+                        "options":  [
+                                        [
+                                            "Threads",
+                                            "1"
+                                        ],
+                                        [
+                                            "Hash",
+                                            "16"
+                                        ]
+                                    ],
+                        "limit":  {
+                                      "tc":  {
+                                                 "increment":  10,
+                                                 "fixed_time":  0,
+                                                 "time":  60000,
+                                                 "moves":  0,
+                                                 "timemargin":  0
+                                             },
+                                      "nodes":  22000,
+                                      "plies":  0
+                                  },
+                        "variant":  0
+                    }
+                ]
+}

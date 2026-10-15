@@ -46,13 +46,22 @@ just conjure up. Concretely:
 
 **What works (and is measured, not claimed):**
 - The compiler pipeline: lexer → parser → type checker → **C backend → clang → native binary**
-  (29 compiler tests pass). It compiles and runs real programs.
+  (43 compiler tests pass). It compiles and runs real programs.
 - Bitboard move generation that is **exact on standard perft positions** (startpos, Kiwipete,
   position 3) across **three build tiers** (SSE2 / SSE4.2+POPCNT / AVX2+BMI2).
 - A searching UCI engine: on this laptop it sustains **~0.87M nodes/sec (bench 6, AVX2 tier)**,
   roughly **7× faster than its own first (mailbox) version**, and raw-faster than the tier-matched
   Stockfish's own bench (~469k nps) — though Stockfish does far more work per node, so that number
   isn't a strength claim.
+- Language surface: `u64` bitboards, `i8`/`i16`/`u16` arrays, bit intrinsics, text and binary file
+  I/O (`fopen`/`fread_i16`/`fread_i32`/`feof`/`fclose`, `substr`), and `popcount`/`ctz`/`now_ms`/
+  `btable_index` builtins.
+- A complete, self-hosted NNUE loop: the engine loads a fixed-point weight file and keeps
+  white/black-view accumulators incrementally inside `make()`; `tools/gen_data.py` turns self-play
+  PGNs into training records and `tools/train.py` trains a 768→32→1 net with hand-derived backprop.
+  The engine and the trainer agree on the score in **9/9** probe positions. The net trained on 37k
+  positions is **not** competitive yet — see
+  [docs/milestones/M13-nnue-training.md](docs/milestones/M13-nnue-training.md).
 - Search features: iterative deepening, alpha-beta, quiescence, transposition table, null-move
   pruning, late-move reductions, killers/history move ordering, check extensions, repetition
   detection, and a tapered evaluation (piece-square tables + pawn structure + mobility + king
@@ -62,13 +71,14 @@ just conjure up. Concretely:
 - **It is much weaker than full Stockfish.** In a fair match (both 1 thread, 16 MB hash, 5+0.05) it
   lost **0–16** to Stockfish 19 at full strength, but beat the *same* Stockfish restricted to
   `Skill Level 0` **6–2 (75%)** at identical limits. The bottleneck is no longer the protocol or
-  movegen — it's the **evaluator**: hand-crafted terms, no neural net. Stockfish uses a mature NNUE
-  net; we don't yet.
+  movegen — it's the **evaluator**: hand-crafted terms, and a neural net that is still in the
+  "does it run and does it learn" stage (37k training positions, 0–7–1 against the hand-crafted
+  eval). Stockfish's net is trained on millions of positions.
+- No LLVM backend yet (the backend is C → clang), no opening book, no endgame tablebases, and a
+  number of rough edges in the language.
 - The earlier "0–8, all by mate" result turned out to be a **compiler bug**, not a weak eval:
   every binary operator was being parsed as right-associative, so `0 - beta + 1` meant
   `0 - (beta + 1)`. See [docs/milestones/M9-precedence-fix.md](docs/milestones/M9-precedence-fix.md).
-- No LLVM backend yet (the backend is C → clang), no neural-net eval, no opening book, no
-  endgame tablebases, and a number of rough edges in the language.
 
 So: the *engine* is fast and correct; the *strength* is early. Don't expect it to win a game
 against Stockfish today.

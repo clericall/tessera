@@ -6,6 +6,8 @@
 # have no extension, so ignore the whole samples dir except the .ter sources.
 compiler/samples/*
 !compiler/samples/*.ter
+!compiler/samples/*.bin
+engine/nnue-test.tnn
 
 *.exe
 *.exe.c
@@ -18,3 +20,14 @@ compiler/samples/*
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# generated self-play artefacts
+*.pgn
+*.bin
+
+# generated networks and scratch engine builds
+engine/nnue-test.tnn
+engine/nnue-smoke.tnn
+compiler/samples/bbuci_test.exe
+compiler/samples/bbuci_test.exe.c
+sweep/

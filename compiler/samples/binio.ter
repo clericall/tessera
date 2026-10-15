@@ -1,0 +1,56 @@
+// Binary file I/O: reads a little-endian i16/i32 fixture and checksums it.
+// Used by the compiler test suite to exercise fopen/fread_*/feof/fclose.
+
+static W: [i16; 8] = [0; 8];
+static B: [i32; 4] = [0; 4];
+
+fn load(path: str) -> i64 {
+    var h: i64 = fopen(path);
+    if h < 0 { return 0 - 1; }
+    var i: i64 = 0;
+    while i < 8 && !feof(h) {
+        let v: i64 = fread_i16(h);
+        if v < 0 - 32768 { break; }
+        W[i] = v;
+        i += 1;
+    }
+    var j: i64 = 0;
+    while j < 4 && !feof(h) {
+        B[j] = fread_i32(h);
+        j += 1;
+    }
+    fclose(h);
+    return i;
+}
+
+fn main() -> i64 {
+    let path: str = read_line();
+    let n: i64 = load(path);
+    putstr("loaded="); putint(n); putc(10);
+    if n < 0 {
+        putstr("missing file"); putc(10);
+        return 0;
+    }
+    var sum: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        putint(W[i]);
+        sum += W[i];
+        putc(32);
+        i += 1;
+    }
+    putstr("sum="); putint(sum); putc(10);
+    var bsum: i64 = 0;
+    var j: i64 = 0;
+    while j < 4 {
+        putint(B[j]);
+        bsum += B[j];
+        putc(32);
+        j += 1;
+    }
+    putstr("bsum="); putint(bsum); putc(10);
+    putstr("eof=");
+    if feof(fopen(path)) { putstr("yes"); } else { putstr("no"); }
+    putc(10);
+    return 0;
+}

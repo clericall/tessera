@@ -22,6 +22,7 @@ version = "0.1.0"
 dependencies = [
  "tessera_ast",
  "tessera_lexer",
+ "tessera_parser",
 ]
 
 [[package]]
@@ -30,6 +31,10 @@ version = "0.1.0"
 
 [[package]]
 name = "tessera_lexer"
+version = "0.1.0"
+
+[[package]]
+name = "tessera_nnue"
 version = "0.1.0"
 
 [[package]]

@@ -8,6 +8,7 @@ members = [
     "crates/tessera_parser",
     "crates/tessera_check",
     "crates/tessera_backend_c",
+    "crates/tessera_nnue",
 ]
 
 # Speed up incremental builds a little.

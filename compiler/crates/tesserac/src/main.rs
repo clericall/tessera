@@ -124,8 +124,22 @@ fn run_check(path: &str) {
     let src = read(path);
     let sf = SourceFile::new(path, &src);
     print_front_diagnostics(&sf, &src);
-    let (module, _) = parse(&src);
-    let (prog, _) = check(&module);
+    let (module, perrs) = parse(&src);
+    if !perrs.is_empty() {
+        for e in &perrs {
+            eprint!("{}", render(&sf, "E0002", (e.span.lo, e.span.hi), &e.message, e.help.as_deref().unwrap_or("")));
+        }
+        eprintln!("{} parse error(s)", perrs.len());
+        std::process::exit(1);
+    }
+    let (prog, cerrs) = check(&module);
+    if !cerrs.is_empty() {
+        for e in &cerrs {
+            eprint!("{}", render(&sf, "E0003", (e.span.lo, e.span.hi), &e.message, e.help.as_deref().unwrap_or("")));
+        }
+        eprintln!("{} type error(s)", cerrs.len());
+        std::process::exit(1);
+    }
     println!("typechecked OK: {} function(s)", prog.funcs.len());
     println!("{prog:#?}");
 }

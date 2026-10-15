@@ -14,9 +14,10 @@ const QUEEN: i64 = 5;
 const KING: i64 = 6;
 const BAND: i64 = 256;
 const U255: u64 = 255;
-
 struct Pos {
+
     bb: [u64; 7],
+    acc: [i16; 64],
     occ: [u64; 2],
     all: u64,
     stm: i64,
@@ -369,15 +370,51 @@ fn make(pos: Pos, mv: i64) -> Pos {
     }
     if promo != 0 { c.bb[promo] = c.bb[promo] | bit(t); }
     else { c.bb[pt] = c.bb[pt] | bit(t); }    c.occ[col] = c.occ[col] | bit(t);
+    if NNUE_ON == 1 {
+        NCNT = 0;
+        var npt: i64 = pt;
+        if promo != 0 { npt = promo; }
+        nnue_mark(feat(col, pt, f, 0), 0 - 1, 0);
+        nnue_mark(feat(col, pt, f, 1), 0 - 1, 1);
+        nnue_mark(feat(col, npt, t, 0), 1, 0);
+        nnue_mark(feat(col, npt, t, 1), 1, 1);
+        if cap != 0 {
+            nnue_mark(feat(colb(cap), absb(cap), t, 0), 0 - 1, 0);
+            nnue_mark(feat(colb(cap), absb(cap), t, 1), 0 - 1, 1);
+        }
+        if pt == PAWN && t == pos.ep && cap == 0 {
+            var epc: i64 = t - 8;
+            if col != 0 { epc = t + 8; }
+            nnue_mark(feat(1 - col, PAWN, epc, 0), 0 - 1, 0);
+            nnue_mark(feat(1 - col, PAWN, epc, 1), 0 - 1, 1);
+        }
+        c = nnue_apply(c);
+    }
     if pt == KING && absb(t - f) == 2 {
         if t > f {
             c.bb[ROOK] = (c.bb[ROOK] ^ bit(f + 3)) | bit(f + 1);
             c.occ[col] = (c.occ[col] ^ bit(f + 3)) | bit(f + 1);
+            if NNUE_ON == 1 {
+                NCNT = 0;
+                nnue_mark(feat(col, ROOK, f + 3, 0), 0 - 1, 0);
+                nnue_mark(feat(col, ROOK, f + 3, 1), 0 - 1, 1);
+                nnue_mark(feat(col, ROOK, f + 1, 0), 1, 0);
+                nnue_mark(feat(col, ROOK, f + 1, 1), 1, 1);
+                c = nnue_apply(c);
+            }
 
 
         } else {
             c.bb[ROOK] = (c.bb[ROOK] ^ bit(f - 4)) | bit(f - 1);
             c.occ[col] = (c.occ[col] ^ bit(f - 4)) | bit(f - 1);
+            if NNUE_ON == 1 {
+                NCNT = 0;
+                nnue_mark(feat(col, ROOK, f - 4, 0), 0 - 1, 0);
+                nnue_mark(feat(col, ROOK, f - 4, 1), 0 - 1, 1);
+                nnue_mark(feat(col, ROOK, f - 1, 0), 1, 0);
+                nnue_mark(feat(col, ROOK, f - 1, 1), 1, 1);
+                c = nnue_apply(c);
+            }
 
 
         }
@@ -431,7 +468,7 @@ fn fen_piece(ch: i64) -> i64 {
     return 0;
 }
 fn from_fen_bb(fen: str, base: i64) -> Pos {
-    var p: Pos = Pos { bb: [0; 7], occ: [0; 2], all: 0, stm: 0, ep: 0 - 1, castle: 0, king: [4, 60], key: 0 };
+    var p: Pos = Pos { bb: [0; 7], occ: [0; 2], acc: [0; 64], all: 0, stm: 0, ep: 0 - 1, castle: 0, king: [4, 60], key: 0 };
     var idx: i64 = base;
     var fr: i64 = 8;
     while fr >= 1 {
@@ -500,6 +537,7 @@ fn from_fen_bb(fen: str, base: i64) -> Pos {
     if p.ep >= 0 { kk = kk ^ ZEP[p.ep]; }
     p.key = kk;
     p.all = p.occ[0] | p.occ[1];
+    if NNUE_ON == 1 { p = nnue_seed(p); }
     return p;
 }
 fn perft_bb(pos: Pos, depth: i64, ply: i64) -> i64 {
@@ -542,6 +580,7 @@ static E_PH: i64 = 0;
 static ZMASK: [u64; 2] = [0; 2];
 static T0: i64 = 0;
 static ABORT: i64 = 0;
+static NODELIMIT: i64 = 0;
 
 fn addmg(v: i64) { E_MG = E_MG + v; }
 fn addeg(v: i64) { E_EG = E_EG + v; }
@@ -792,7 +831,223 @@ fn score_side(pos: Pos, col: i64, ownr: u64, oppr: u64, sgn: i64) {
     score_attacks(pos, col, sgn);
 }
 
-fn eval_pos_bb(pos: Pos) -> i64 {
+// ---- NNUE (tiny fixed-point net, format v1) --------------------------------
+// Layout: fopen + sequential fread. Two transformer tables (white/black view),
+// one hidden layer of NH units, i16 weights with an i16-clipped accumulator.
+// Pos carries both accumulators so copy-make keeps them in sync automatically.
+
+const NH: i64 = 32;
+const NFEAT: i64 = 768;
+
+static NW1: [i16; 49152] = [0; 49152];
+static NW2: [i16; 32] = [0; 32];
+static NPSQT: [i16; 768] = [0; 768];
+static NBIAS: [i16; 32] = [0; 32];
+static NSCALE: i64 = 400;
+static NNUE_ON: i64 = 0;
+static NDX: [i64; 8] = [0; 8];
+static NSG: [i64; 8] = [0; 8];
+static NVW: [i64; 8] = [0; 8];
+static NCNT: i64 = 0;
+
+fn clip16(x: i64) -> i64 {
+    if x > 32767 { return 32767; }
+    if x < 0 - 32768 { return 0 - 32768; }
+    return x;
+}
+
+// Feature index for a piece, from one of the two perspectives.
+fn feat(col: i64, pt: i64, sq: i64, bview: i64) -> i64 {
+    var base: i64 = pt - 1;
+    var rel: i64 = sq;
+    if col != bview { base = 6 + (pt - 1); rel = 63 - sq; }
+    return base * 64 + rel;
+}
+
+fn nnue_mark(idx: i64, sgn: i64, view: i64) {
+    if NCNT < 8 { NDX[NCNT] = idx; NSG[NCNT] = sgn; NVW[NCNT] = view; NCNT += 1; }
+}
+
+// Applies every queued feature edit to both accumulators of `c`.
+fn nnue_apply(c: Pos) -> Pos {
+    var out: Pos = c;
+    var k: i64 = 0;
+    while k < NCNT {
+        let w: i64 = NDX[k] * NH;
+        if NVW[k] == 1 { w = NFEAT * NH + w; }
+        let sg: i64 = NSG[k];
+        var q: i64 = 0;
+        while q < NH {
+            if NVW[k] == 0 { out.acc[q] = clip16(out.acc[q] + sg * NW1[w + q]); }
+            else { out.acc[NH + q] = clip16(out.acc[NH + q] + sg * NW1[w + q]); }
+            q += 1;
+        }
+        k += 1;
+    }
+    return out;
+}
+
+fn nnue_seed(pos: Pos) -> Pos {
+    var p: Pos = pos;
+    var i: i64 = 0;
+    while i < NH {
+        p.acc[i] = NBIAS[i];
+        p.acc[NH + i] = NBIAS[i];
+        i += 1;
+    }
+    var sq2: i64 = 0;
+    while sq2 < 64 {
+        let pc: i64 = piece_at(p, sq2);
+        if pc != 0 {
+            let pt: i64 = absb(pc);
+            let cl: i64 = colb(pc);
+            let i0: i64 = feat(cl, pt, sq2, 0);
+            let i1: i64 = feat(cl, pt, sq2, 1);
+            var q: i64 = 0;
+            while q < NH {
+                p.acc[q] = clip16(p.acc[q] + NW1[i0 * NH + q]);
+                p.acc[NH + q] = clip16(p.acc[NH + q] + NW1[NFEAT * NH + i1 * NH + q]);
+                q += 1;
+            }
+        }
+        sq2 += 1;
+    }
+    return p;
+}
+
+fn nnue_eval(pos: Pos) -> i64 {
+    let off: i64 = pos.stm * NH;
+    var hidden: i64 = 0;
+    var i: i64 = 0;
+    while i < NH {
+        hidden += pos.acc[off + i] * NW2[i];
+        i += 1;
+    }
+    hidden = clip16(hidden);
+    var ps: i64 = 0;
+    var sq3: i64 = 0;
+    while sq3 < 64 {
+        let pc: i64 = piece_at(pos, sq3);
+        if pc != 0 { ps += NPSQT[feat(colb(pc), absb(pc), sq3, pos.stm)]; }
+        sq3 += 1;
+    }
+    let v: i64 = clip16(ps + hidden);
+    var out: i64 = (v * NSCALE) / 64;
+    if out > 8000 { out = 8000; }
+    if out < 0 - 8000 { out = 0 - 8000; }
+    return out;
+}
+
+fn nnue_clear_tt() {
+    var i: i64 = 0;
+    while i < 262144 { TT_KEY[i] = 0; i += 1; }
+}
+
+fn nnue_load(path: str) -> bool {
+    let h: i64 = fopen(path);
+    if h < 0 { return false; }
+    var m0: i64 = fread_u8(h);
+    var m1: i64 = fread_u8(h);
+    var m2: i64 = fread_u8(h);
+    var m3: i64 = fread_u8(h);
+    if m0 != 84 || m1 != 78 || m2 != 78 || m3 != 85 { fclose(h); return false; }
+    let ver: i64 = fread_i32(h);
+    let hs: i64 = fread_i32(h);
+    if ver != 1 || hs != NH { fclose(h); return false; }
+    NSCALE = fread_i32(h);
+    if NSCALE <= 0 { NSCALE = 400; }
+    var i: i64 = 0;
+    while i < NH {
+        NBIAS[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NH {
+        NW2[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NFEAT {
+        NPSQT[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NFEAT * NH {
+        NW1[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NFEAT * NH {
+        NW1[NFEAT * NH + i] = fread_i16(h);
+        i += 1;
+    }
+    fclose(h);
+    nnue_clear_tt();
+    NNUE_ON = 1;
+    return true;
+}
+
+fn sub_at(line: str, i: i64, pat: str) -> bool {
+    if i + len(pat) > len(line) { return false; }
+    var k: i64 = 0;
+    while k < len(pat) {
+        if line[i + k] != pat[k] { return false; }
+        k += 1;
+    }
+    return true;
+}
+
+fn find_sub(line: str, pat: str) -> i64 {
+    var i: i64 = 0;
+    while i < len(line) {
+        if sub_at(line, i, pat) { return i; }
+        i += 1;
+    }
+    return 0 - 1;
+}
+
+// value after `word`, or -1. UCI lines are space separated.
+fn word_num(line: str, word: str) -> i64 {
+    let at: i64 = find_sub(line, word);
+    if at < 0 { return 0; }
+    var i: i64 = at + len(word);
+    while i < len(line) && line[i] == 32 { i += 1; }
+    if i >= len(line) { return 0; }
+    return num_after(line, i);
+}
+
+fn opt_value(line: str, word: str) -> i64 {
+    if find_sub(line, word) < 0 { return 0 - 1; }
+    let v: i64 = find_sub(line, "value");
+    if v < 0 { return 0 - 1; }
+    var i: i64 = v + 5;
+    while i < len(line) && line[i] == 32 { i += 1; }
+    if i >= len(line) { return 0 - 1; }
+    return i;
+}
+
+fn handle_setoption(line: str) {
+    // Threads / Hash are accepted and ignored so GUIs stop warning.
+    let ev: i64 = opt_value(line, "EvalFile");
+    if ev >= 0 {
+        let path: str = substr(line, ev, len(line));
+        if nnue_load(path) {
+            putstr("info string nnue loaded");
+            putc(10);
+        } else {
+            putstr("info string nnue load failed");
+            putc(10);
+        }
+        return;
+    }
+    let un: i64 = opt_value(line, "UseNNUE");
+    if un >= 0 {
+        if line[un] == 102 || line[un] == 48 { NNUE_ON = 0; nnue_clear_tt(); }
+        return;
+    }
+}
+
+fn hce_eval(pos: Pos) -> i64 {
     E_MG = 0;
     E_EG = 0;
     E_PH = 0;
@@ -814,6 +1069,10 @@ fn eval_pos_bb(pos: Pos) -> i64 {
     return r + 10;
 }
 
+fn eval_pos_bb(pos: Pos) -> i64 {
+    if NNUE_ON == 1 { return nnue_eval(pos); }
+    return hce_eval(pos);
+}
 fn score_of_bb(pos: Pos, mv: i64) -> i64 {
     let f: i64 = mv / 1000000;
     let rem: i64 = mv - f * 1000000;
@@ -890,7 +1149,10 @@ fn prepend_best(ply: i64, n: i64, bestmv: i64) {
 fn quiesce(pos: Pos, mut_a: i64, beta: i64, ply: i64) -> i64 {
     NODES += 1;
     if ABORT == 1 { return mut_a; }
-    if (NODES & 1023) == 0 && DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
+    if (NODES & 1023) == 0 {
+        if NODELIMIT > 0 && NODES >= NODELIMIT { ABORT = 1; return mut_a; }
+        if DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
+    }
     if ply >= 120 { return eval_pos_bb(pos); }
     let incheck: bool = in_check_bb(pos, pos.stm);
     let stand: i64 = eval_pos_bb(pos);
@@ -937,7 +1199,10 @@ fn negamax(pos: Pos, depth: i64, mut_a: i64, beta: i64, ply: i64) -> i64 {
     if ply >= 120 { return eval_pos_bb(pos); }
     NODES += 1;
     if ABORT == 1 { return mut_a; }
-    if (NODES & 1023) == 0 && DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
+    if (NODES & 1023) == 0 {
+        if NODELIMIT > 0 && NODES >= NODELIMIT { ABORT = 1; return mut_a; }
+        if DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
+    }
     let key: i64 = pos.key;
     KEYSTACK[ply] = key;
     var ri: i64 = 0;
@@ -999,11 +1264,14 @@ fn negamax(pos: Pos, depth: i64, mut_a: i64, beta: i64, ply: i64) -> i64 {
                 red = 1;
                 if legal > 8 { red = 2; }
             }
-            var sc: i64 = 0 - negamax(child, d - 1 - red, 0 - beta, 0 - alpha, ply + 1);
-            if red > 0 && sc > alpha && sc < beta {
-                let sc2: i64 = 0 - negamax(child, d - 1, 0 - beta, 0 - alpha, ply + 1);
-                if sc2 > sc { sc = sc2; }
-            }
+            // PVS was tried here (probe late moves with a null window around the
+            // current alpha, re-search on a hit). It measured *slower*: with this
+            // transpo table, bound entries written by the probes cause enough
+            // re-searches to give back the savings -- 1.20M vs 1.02M nodes at
+            // depth 9 on an opening position. Left out until the TT stores bound
+            // types properly (see docs/results/pvs-2026-10-14.md).
+            let dd: i64 = d - 1 - red;
+            var sc: i64 = 0 - negamax(child, dd, 0 - beta, 0 - alpha, ply + 1);
             if sc > best { best = sc; bestmv = mv; }
             if sc > alpha { alpha = sc; }
             if alpha >= beta {
@@ -1215,9 +1483,14 @@ fn main() -> i64 {
             if L == 3 && line[1] == 99 && line[2] == 105 {
                 putstr("id name Tessera 0.2 (bitboards)"); putc(10);
                 putstr("id author Tessera"); putc(10);
+                putstr("option name EvalFile type string"); putc(10);
+                putstr("option name Threads type spin default 1 min 1 max 1"); putc(10);
+                putstr("option name Hash type spin default 16 min 16 max 16"); putc(10);
+                putstr("option name UseNNUE type check default true"); putc(10);
                 putstr("uciok"); putc(10);
-            } else if L >= 10 {
+            } else if L >= 8 && line[3] == 110 {
                 pos = from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0);
+                nnue_clear_tt();
             }
         } else if line[0] == 105 {
             putstr("readyok"); putc(10);
@@ -1269,6 +1542,8 @@ fn main() -> i64 {
             var maxdepth: i64 = 64;
             let dd: i64 = parse_depth(line);
             if dd > 0 { maxdepth = dd; }
+            NODELIMIT = 0;
+            NODELIMIT = word_num(line, "nodes");
             DEADLINE = now_ms() + 60000;
             let mt: i64 = find_kw(line, 1);
             if mt >= 0 { let ms: i64 = num_after(line, mt); if ms > 0 { DEADLINE = now_ms() + ms - 30; } }
@@ -1309,6 +1584,39 @@ fn main() -> i64 {
             var nps: i64 = 0;
             if ms > 0 { nps = (total * 1000) / ms; }
             putstr("nps "); putint(nps); putc(10);
+        } else if line[0] == 115 {
+            handle_setoption(line);
+        } else if line[0] == 101 && line[1] == 118 {
+            QUIET = 1;
+            putstr("hce="); putint(hce_eval(pos));
+            putstr(" stm="); putint(pos.stm);
+            if NNUE_ON == 1 {
+                putstr(" nnue="); putint(nnue_eval(pos));
+                let fresh: Pos = nnue_seed(pos);
+                putstr(" fresh="); putint(nnue_eval(fresh));
+                var same: bool = true;
+                var q9: i64 = 0;
+                while q9 < 64 { if fresh.acc[q9] != pos.acc[q9] { same = false; } q9 += 1; }
+                putstr(" accok="); if same { putstr("yes"); } else { putstr("NO"); }
+                if !same {
+                    var q8: i64 = 0;
+                    while q8 < 64 { if fresh.acc[q8] != pos.acc[q8] { putstr(" firstdiff="); putint(q8); putstr(" inc="); putint(pos.acc[q8]); putstr(" seed="); putint(fresh.acc[q8]); break; } q8 += 1; }
+                }
+            }
+            putc(10);
+            QUIET = 0;
+        } else if line[0] == 102 && line[1] == 105 {
+            // dump the active feature indices (cross-checked against tools/gen_data.py)
+            var v0: i64 = 0;
+            while v0 < 2 {
+                var z0: i64 = 0;
+                while z0 < 64 {
+                    let pc: i64 = piece_at(pos, z0);
+                    if pc != 0 { putint(feat(colb(pc), absb(pc), z0, v0)); putc(10); }
+                    z0 += 1;
+                }
+                v0 += 1;
+            }
         } else if line[0] == 113 {
             running = 0;
         }

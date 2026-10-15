@@ -1,0 +1,13 @@
+[package]
+name = "tessera_nnue"
+version = "0.1.0"
+edition = "2021"
+description = "Tessera NNUE weight-file format + tooling"
+
+[lib]
+name = "tessera_nnue"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nnue_init"
+path = "src/bin/nnue_init.rs"
