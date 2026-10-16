@@ -1,0 +1,24 @@
+// Probe: which language features actually exist today?
+type BitBoard = u64;
+
+struct P { x: i64, y: i64 }
+
+fn sum_array(a: [i64; 4]) -> i64 {
+    var s: i64 = 0;
+    var i: i64 = 0;
+    while i < 4 { s += a[i]; i += 1; }
+    return s;
+}
+
+fn main() -> i64 {
+    let f: f64 = 1.5;
+    let g: f64 = f * 2.0;
+    let arr: [i64; 4] = [1, 2, 3, 4];
+    var total: i64 = sum_array(arr);
+    for k in 0..3 { total += k; }
+    let bb: BitBoard = 255;
+    let p: P = P { x: 1, y: 2 };
+    putint(total);
+    putc(10);
+    return 0;
+}

@@ -19,6 +19,8 @@ use tessera_lexer::Span;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Type {
     Int { bits: u16, signed: bool },
+    F32,
+    F64,
     Bool,
     Unit,
     Array { elem: Box<Type>, len: usize },
@@ -42,12 +44,18 @@ impl Type {
     pub fn is_bool(&self) -> bool {
         matches!(self, Type::Bool)
     }
+    pub fn is_float(&self) -> bool {
+        matches!(self, Type::F32 | Type::F64)
+    }
+
     pub fn is_numeric(&self) -> bool {
-        self.is_int()
+        self.is_int() || self.is_float()
     }
     pub fn display(&self) -> String {
         match self {
             Type::Int { bits, signed } => format!("{}{}", if *signed { "i" } else { "u" }, bits),
+            Type::F32 => "f32".into(),
+            Type::F64 => "f64".into(),
             Type::Bool => "bool".into(),
             Type::Str => "str".into(),
             Type::Unit => "()".into(),
@@ -67,6 +75,8 @@ impl Type {
             Type::Int { bits: 64, signed: false } => "uint64_t".into(),
             Type::Int { .. } => "int64_t".into(),
             Type::Bool => "bool".into(),
+            Type::F32 => "float".into(),
+            Type::F64 => "double".into(),
             Type::Str => "Tr_str".into(),
             Type::Unit => "void".into(),
             Type::Array { elem, len } => format!("{}[{}]", elem.c_ty(), len),
@@ -84,6 +94,16 @@ fn unify_int(x: &Type, y: &Type) -> Option<Type> {
     }
 }
 
+fn unify_float(x: &Type, y: &Type) -> Option<Type> {
+    match (x, y) {
+        (Type::F32, Type::F32) => Some(Type::F32),
+        (Type::F32, Type::F64) | (Type::F64, Type::F32) | (Type::F64, Type::F64) => {
+            Some(Type::F64)
+        }
+        _ => None,
+    }
+}
+
 fn builtin_type(name: &str) -> Option<Type> {
     Some(match name {
         "i8" => Type::Int { bits: 8, signed: true },
@@ -96,6 +116,8 @@ fn builtin_type(name: &str) -> Option<Type> {
         "u64" | "usize" => Type::Int { bits: 64, signed: false },
         "bool" => Type::Bool,
         "str" => Type::Str,
+        "f32" => Type::F32,
+        "f64" => Type::F64,
         _ => return None,
     })
 }
@@ -155,15 +177,21 @@ fn const_init(ty: &Type, e: &a::Expr) -> Option<String> {
     }
 }
 
-fn resolve_ty_ctx(ty: &a::Ty, names: &HashSet<String>, consts: &HashMap<String, (i128, Type)>) -> Type {
+fn resolve_ty_ctx(
+    ty: &a::Ty,
+    names: &HashSet<String>,
+    consts: &HashMap<String, (i128, Type)>,
+    aliases: &HashMap<String, Type>,
+) -> Type {
     match ty {
         a::Ty::Named { segs, .. } if segs.len() == 1 => {
             builtin_type(&segs[0])
+                .or_else(|| aliases.get(&segs[0]).cloned())
                 .or_else(|| names.get(&segs[0]).map(|_| Type::Struct(segs[0].clone())))
                 .unwrap_or(Type::i64())
         }
         a::Ty::Array { elem, len, .. } => Type::Array {
-            elem: Box::new(resolve_ty_ctx(elem, names, consts)),
+            elem: Box::new(resolve_ty_ctx(elem, names, consts, aliases)),
             len: const_int(consts, len).unwrap_or(0),
         },
         _ => Type::Unit,
@@ -295,6 +323,7 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     IntLit(i128),
+    FloatLit(f64),
     BoolLit(bool),
     Str(String),
     Var(usize),
@@ -304,6 +333,7 @@ pub enum ExprKind {
     Call { func: String, args: Vec<Expr> },
     Field { base: Box<Expr>, name: String },
     Index { base: Box<Expr>, index: Box<Expr> },
+    Cast { expr: Box<Expr>, ty: Type },
     ArrayInit(Vec<Expr>),
     StructInit { name: String, fields: Vec<(String, Expr)> },
     If { cond: Box<Expr>, then: Block, els: Option<Block> },
@@ -338,7 +368,11 @@ impl AsTyped for ExprKind {
     }
 }
 fn coerce(e: Expr, t: &Type) -> Expr {
-    if e.ty == *t || (e.ty.is_int() && t.is_int()) || matches!(t, Type::Unit) {
+    if e.ty == *t
+        || (e.ty.is_int() && t.is_int())
+        || (e.ty.is_float() && t.is_float())
+        || matches!(t, Type::Unit)
+    {
         Expr { ty: t.clone(), ..e }
     } else {
         e
@@ -370,6 +404,7 @@ fn ast_assignop(o: a::AssignOp) -> HBin {
 // ---------------------------------------------------------------------------
 
 struct Checker {
+    aliases: HashMap<String, Type>,
     funcs: HashMap<String, (Vec<Type>, Type)>,
     consts: HashMap<String, (i128, Type)>,
     structs: HashMap<String, Vec<(String, Type)>>,
@@ -422,6 +457,9 @@ impl Checker {
                 if let Some(t) = builtin_type(&segs[0]) {
                     return Some(t);
                 }
+                if let Some(t) = self.aliases.get(&segs[0]) {
+                    return Some(t.clone());
+                }
                 if self.structs.contains_key(&segs[0]) {
                     return Some(Type::Struct(segs[0].clone()));
                 }
@@ -466,9 +504,13 @@ impl Checker {
             a::ExprKind::Lit(a::Lit::Bool(b)) => ExprKind::BoolLit(*b).typed(Type::Bool, sp),
             a::ExprKind::Lit(a::Lit::Char(v)) => ExprKind::IntLit(*v as i128).typed(Type::i64(), sp),
             a::ExprKind::Lit(a::Lit::Str(s)) => ExprKind::Str(decode_str(s)).typed(Type::Str, sp),
-            a::ExprKind::Lit(a::Lit::Float(_)) => {
-                self.err(sp, "floating-point is not supported yet", None);
-                unit_expr(sp)
+            a::ExprKind::Lit(a::Lit::Float(text)) => {
+                let ty = expect
+                    .cloned()
+                    .filter(|t| t.is_float())
+                    .unwrap_or(Type::F64);
+                let v: f64 = text.parse().unwrap_or(0.0);
+                ExprKind::FloatLit(v).typed(ty, sp)
             }
             a::ExprKind::Unit => ExprKind::Unit.typed(Type::Unit, sp),
             a::ExprKind::Ident(name) => {
@@ -542,6 +584,22 @@ impl Checker {
             a::ExprKind::Binary { op, lhs, rhs } => self.check_binary(*op, lhs, rhs, sp),
             a::ExprKind::Assign { op, lhs, rhs } => self.check_assign(*op, lhs, rhs, sp),
             a::ExprKind::Call { callee, args } => self.check_call(callee, args),
+            a::ExprKind::Cast { expr, ty } => {
+                let inner = self.check_expr(expr, None);
+                let target = match self.resolve_type(ty) {
+                    Some(t) => t,
+                    None => return unit_expr(sp),
+                };
+                let from = inner.ty.clone();
+                let is_numeric = |t: &Type| t.is_int() || t.is_float() || t.is_bool();
+                if !is_numeric(&from) || !is_numeric(&target) {
+                    self.err(sp,
+                             format!("cannot cast `{}` to `{}`", from.display(), target.display()),
+                             Some("casts convert between integer, float and bool types"));
+                }
+                let ty2 = target.clone();
+                ExprKind::Cast { expr: Box::new(inner), ty: target }.typed(ty2, sp)
+            }
             a::ExprKind::Field { base, name } => {
                 let b = self.check_expr(base, None);
                 match &b.ty {
@@ -683,7 +741,7 @@ impl Checker {
         let r = self.check_expr(rhs, want.as_ref());
         match hb {
             HBin::Eq | HBin::Ne | HBin::Lt | HBin::Le | HBin::Gt | HBin::Ge => {
-                let rt = match unify_int(&l.ty, &r.ty) {
+                let rt = match unify_int(&l.ty, &r.ty).or_else(|| unify_float(&l.ty, &r.ty)) {
                     Some(t) => t,
                     None => {
                         self.err(sp, format!("cannot compare {} with {}", l.ty.display(), r.ty.display()), None);
@@ -698,8 +756,19 @@ impl Checker {
                 }
                 ExprKind::Binary { op: hb, lhs: Box::new(l), rhs: Box::new(r) }.typed(Type::Bool, sp)
             }
-            _ => {
+            HBin::Rem => {
+                // C `%` is integer-only.
+                if !l.ty.is_int() || !r.ty.is_int() {
+                    self.err(sp, format!("`%` requires integer operands, got {} and {}", l.ty.display(), r.ty.display()), None);
+                }
                 let rt = match unify_int(&l.ty, &r.ty) {
+                    Some(t) => t,
+                    None => Type::i64(),
+                };
+                ExprKind::Binary { op: hb, lhs: Box::new(coerce(l, &rt)), rhs: Box::new(coerce(r, &rt)) }.typed(rt, sp)
+            }
+            _ => {
+                let rt = match unify_int(&l.ty, &r.ty).or_else(|| unify_float(&l.ty, &r.ty)) {
                     Some(t) => t,
                     None => {
                         self.err(sp, format!("invalid operands for `{}`: {} and {}", hb.c(), l.ty.display(), r.ty.display()), None);
@@ -880,6 +949,20 @@ impl Checker {
                 let n = self.check_expr(&args[2], Some(&Type::i64()));
                 ExprKind::Call { func: name, args: vec![s, a, n] }.typed(Type::Str, sp)
             }
+            "len" => {
+                if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
+                let s = self.check_expr(&args[0], Some(&Type::Str));
+                if s.ty != Type::Str { self.err(args[0].span, "`len` expects a string", None); }
+                ExprKind::Call { func: name, args: vec![s] }.typed(Type::i64(), sp)
+            }
+            "concat" => {
+                if !self.expect_arity(&name, args, 2) { return unit_expr(sp); }
+                let a = self.check_expr(&args[0], Some(&Type::Str));
+                let b = self.check_expr(&args[1], Some(&Type::Str));
+                if a.ty != Type::Str { self.err(args[0].span, "`concat` expects a string", None); }
+                if b.ty != Type::Str { self.err(args[1].span, "`concat` expects a string", None); }
+                ExprKind::Call { func: name, args: vec![a, b] }.typed(Type::Str, sp)
+            }
             "fread_u8" | "fread_i16" | "fread_i32" => {
                 if !self.expect_arity(&name, args, 1) { return unit_expr(sp); }
                 let a = self.check_expr(&args[0], Some(&Type::i64()));
@@ -1012,6 +1095,64 @@ fn ty_of_struct(name: &str) -> Type {
 pub fn check(module: &a::Module) -> (Program, Vec<CheckError>) {
     let mut errors: Vec<CheckError> = Vec::new();
 
+    // -1) Type aliases (`type BitBoard = u64;`). Resolved first because every
+    // later pass may mention an alias. Alias-of-alias is allowed; cycles are not.
+    let mut aliases: HashMap<String, Type> = HashMap::new();
+    let mut alias_deps: Vec<(String, a::Ty, Span)> = Vec::new();
+    for item in &module.items {
+        if let a::ItemKind::TypeAlias { name, ty } = &item.kind {
+            alias_deps.push((name.clone(), ty.clone(), item.span));
+        }
+    }
+    let raw_struct_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|it| match &it.kind {
+            a::ItemKind::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect();
+    // Resolve repeatedly: each pass can settle aliases that only depend on
+    // already-settled ones. A leftover after a full pass is a cycle or unknown.
+    for _ in 0..alias_deps.len().max(1) {
+        let mut progressed = false;
+        for (name, ty, span) in &alias_deps {
+            if aliases.contains_key(name) {
+                continue;
+            }
+            let resolved = match ty {
+                a::Ty::Named { segs, span: sp } if segs.len() == 1 => {
+                    builtin_type(&segs[0])
+                        .or_else(|| aliases.get(&segs[0]).cloned())
+                        .or_else(|| raw_struct_names.get(&segs[0]).map(|_| Type::Struct(segs[0].clone())))
+                        .unwrap_or_else(|| {
+                            let known_alias = alias_deps.iter().any(|(n, _, _)| n == &segs[0]);
+                            let message = if known_alias {
+                                format!("cyclic type alias: `{name}` depends on `{}`", segs[0])
+                            } else {
+                                format!("unknown type `{}` in alias `{name}`", segs[0])
+                            };
+                            errors.push(CheckError { span: *sp, message, help: None });
+                            Type::i64()
+                        })
+                }
+                other => resolve_ty_ctx(other, &raw_struct_names, &HashMap::new(), &aliases),
+            };
+            aliases.insert(name.clone(), resolved);
+            let _ = span;
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+    for (name, _, span) in &alias_deps {
+        if !aliases.contains_key(name) {
+            errors.push(CheckError { span: *span, message: format!("cyclic type alias `{name}`"), help: None });
+            aliases.insert(name.clone(), Type::i64());
+        }
+    }
+
     // 0) Struct names.
     let mut raw_structs: Vec<(String, Vec<(String, a::Ty)>)> = Vec::new();
     for item in &module.items {
@@ -1029,7 +1170,7 @@ pub fn check(module: &a::Module) -> (Program, Vec<CheckError>) {
     for item in &module.items {
         if let a::ItemKind::Const { name, ty, value } = &item.kind {
             let t = match ty {
-                Some(t) => resolve_ty_ctx(t, &struct_names, &consts),
+                Some(t) => resolve_ty_ctx(t, &struct_names, &consts, &aliases),
                 None => Type::i64(),
             };
             match &value.kind {
@@ -1058,7 +1199,7 @@ pub fn check(module: &a::Module) -> (Program, Vec<CheckError>) {
     for (name, fields) in &raw_structs {
         let resolved = fields
             .iter()
-            .map(|(fn_, ty)| (fn_.clone(), resolve_ty_ctx(ty, &struct_names, &consts)))
+            .map(|(fn_, ty)| (fn_.clone(), resolve_ty_ctx(ty, &struct_names, &consts, &aliases)))
             .collect::<Vec<_>>();
         structs.insert(name.clone(), resolved.clone());
         struct_order.push(StructDef { name: name.clone(), fields: resolved });
@@ -1074,13 +1215,22 @@ pub fn check(module: &a::Module) -> (Program, Vec<CheckError>) {
                 let params = f
                     .params
                     .iter()
-                    .map(|p| resolve_ty_ctx(&p.ty, &struct_names, &consts))
+                    .map(|p| resolve_ty_ctx(&p.ty, &struct_names, &consts, &aliases))
                     .collect::<Vec<_>>();
-                let ret = f.ret.as_ref().map(|t| resolve_ty_ctx(t, &struct_names, &consts)).unwrap_or(Type::Unit);
+                let ret = f.ret.as_ref().map(|t| resolve_ty_ctx(t, &struct_names, &consts, &aliases)).unwrap_or(Type::Unit);
+                // C has no array return type; without this the failure only shows
+                // up as a wall of clang errors about the generated `.c` file.
+                if matches!(&ret, Type::Array { .. }) {
+                    errors.push(CheckError {
+                        span: item.span,
+                        message: format!("function `{}` cannot return an array type", f.name),
+                        help: Some("use a `[T; N]` parameter as an out-parameter, or return a struct".into()),
+                    });
+                }
                 funcs.insert(f.name.clone(), (params, ret));
             }
             a::ItemKind::Static { name, ty, value } => {
-                let t = resolve_ty_ctx(ty, &struct_names, &consts);
+                let t = resolve_ty_ctx(ty, &struct_names, &consts, &aliases);
                 match const_init(&t, value) {
                     Some(init) => {
                         globals.insert(name.clone(), t.clone());
@@ -1093,9 +1243,7 @@ pub fn check(module: &a::Module) -> (Program, Vec<CheckError>) {
                     }),
                 }
             }
-            a::ItemKind::TypeAlias { .. } => {
-                errors.push(CheckError { span: item.span, message: "type aliases are not supported yet".into(), help: None });
-            }
+            a::ItemKind::TypeAlias { .. } => {}
             a::ItemKind::Import { .. } => {
                 errors.push(CheckError { span: item.span, message: "`import` is not supported yet".into(), help: None });
             }
@@ -1109,6 +1257,7 @@ pub fn check(module: &a::Module) -> (Program, Vec<CheckError>) {
         if let a::ItemKind::Fn(f) = &item.kind {
             let (params, ret) = funcs.get(&f.name).cloned().unwrap();
             let mut c = Checker {
+                aliases: aliases.clone(),
                 funcs: funcs.clone(),
                 consts: consts.clone(),
                 structs: structs.clone(),

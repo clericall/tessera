@@ -13,7 +13,9 @@ dependencies = [
 name = "tessera_backend_c"
 version = "0.1.0"
 dependencies = [
+ "tessera_ast",
  "tessera_check",
+ "tessera_parser",
 ]
 
 [[package]]
@@ -49,6 +51,7 @@ dependencies = [
 name = "tesserac"
 version = "0.1.0"
 dependencies = [
+ "tessera_ast",
  "tessera_backend_c",
  "tessera_check",
  "tessera_diag",

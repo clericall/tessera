@@ -111,6 +111,13 @@ point of view — a short read yields `-1` rather than partially-filled data.
 buffer), so `fopen(substr(line, i, n))` works. The string builtin `substr(s, start, len) -> str`
 returns a view into `s` and clamps out-of-range arguments.
 
+### 7.2 String builtins (implemented)
+
+| builtin | signature | notes |
+|---|---|---|
+| `len` | `len(s: str) -> i64` | number of bytes in `s` |
+| `concat` | `concat(a: str, b: str) -> str` | byte-wise concatenation; result is heap-allocated by the runtime |
+
 ## 8. Compile-time evaluation
 - `const fn` must be **pure** (no I/O, no mutation of `static`/outer state, no external calls);
   recursion allowed, depth-capped by the compiler.

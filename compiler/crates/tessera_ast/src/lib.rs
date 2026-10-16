@@ -109,6 +109,8 @@ pub enum ExprKind {
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Field { base: Box<Expr>, name: String },
     Index { base: Box<Expr>, index: Box<Expr> },
+    /// `expr as T` — an explicit numeric reinterpretation.
+    Cast { expr: Box<Expr>, ty: Ty },
     If { cond: Box<Expr>, then: Block, els: Option<Box<Expr>> },
     Block(Block),
     While { cond: Box<Expr>, body: Block },

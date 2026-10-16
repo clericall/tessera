@@ -225,7 +225,9 @@ impl<'a> Parser<'a> {
                 return Err(self.err("expected a string path after `import`", sp));
             }
             self.bump();
-            let path = self.text(sp).to_string();
+            // The string token's text still carries its quotes; the module path
+            // stored in the AST is the bare path.
+            let path = self.text(sp).trim_matches('"').to_string();
             self.expect(Tok::Semi, "`;`")?;
             return Ok(Item { kind: ItemKind::Import { path }, span: Span::new(start.lo, self.last_hi) });
         }
@@ -429,6 +431,11 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let name = self.expect_ident()?;
                     e = self.fin(ExprKind::Field { base: Box::new(e), name }, start);
+                }
+                Tok::Keyword if self.peek_text() == "as" => {
+                    self.bump();
+                    let ty = self.parse_type()?;
+                    e = self.fin(ExprKind::Cast { expr: Box::new(e), ty }, start);
                 }
                 Tok::Question => {
                     return Err(self.err("the `?` operator is not supported yet", self.span()));
@@ -742,6 +749,102 @@ fn infix_bp(t: Tok) -> Option<(u8, u8, Infix)> {
         Tok::ShrEq => (2, 1, Assign(AssignOp::Shr)),
         _ => return None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Modules: `import "file.ter";`
+//
+// Imports are a textual include with include-once semantics: the imported file
+// is parsed in its own file context (so its diagnostics point at the right line)
+// and every file is spliced in exactly once, which also breaks import cycles.
+// ---------------------------------------------------------------------------
+
+/// A diagnostic that knows the file (and source text) it came from, so an error
+/// inside an imported module is still reported at the right line.
+#[derive(Debug, Clone)]
+pub struct FileDiagnostic {
+    pub path: String,
+    pub src: String,
+    pub err: ParseError,
+}
+
+/// Parse `path` and splice in everything it imports, recursively.
+///
+/// Returns the merged module, the diagnostics for `path` itself (spans refer to
+/// its own source, so existing renderers keep working) and the diagnostics of
+/// every imported file.
+pub fn parse_file(path: &std::path::Path) -> (Module, Vec<ParseError>, Vec<FileDiagnostic>) {
+    let mut loaded: Vec<std::path::PathBuf> = Vec::new();
+    let mut imported: Vec<FileDiagnostic> = Vec::new();
+    let items = load_items(path, &mut loaded, &mut imported, None);
+    (Module { items }, Vec::new(), imported)
+}
+
+fn load_items(
+    path: &std::path::Path,
+    loaded: &mut Vec<std::path::PathBuf>,
+    imported: &mut Vec<FileDiagnostic>,
+    via: Option<(&Item, &str, &str)>,
+) -> Vec<Item> {
+    let display = path.display().to_string();
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            // Report a failed read against the `import` line of the file that
+            // asked for the module -- pointing at the missing file helps nobody.
+            let (err_path, err_src, span) = match via {
+                Some((item, parent_path, parent_src)) => {
+                    (parent_path.to_string(), parent_src.to_string(), item.span)
+                }
+                None => (display.clone(), String::new(), Span::new(0, 0)),
+            };
+            let message = match via {
+                Some(_) => format!("cannot read imported module `{display}`: {e}"),
+                None => format!("cannot read `{display}`: {e}"),
+            };
+            imported.push(FileDiagnostic {
+                path: err_path,
+                src: err_src,
+                err: ParseError {
+                    span,
+                    message,
+                    help: Some("import paths are relative to the importing file".into()),
+                },
+            });
+            return Vec::new();
+        }
+    };
+
+    // Include-once: a second import of the same file contributes nothing, and a
+    // cycle terminates instead of recursing forever.
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if loaded.iter().any(|p| p == &key) {
+        return Vec::new();
+    }
+    loaded.push(key);
+
+    let (module, mut errs) = parse(&src);
+    for err in errs.drain(..) {
+        imported.push(FileDiagnostic { path: display.clone(), src: src.clone(), err });
+    }
+
+    let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut out = Vec::new();
+    for item in module.items {
+        match &item.kind {
+            ItemKind::Import { path: rel } => {
+                let target = if dir.as_os_str().is_empty() {
+                    std::path::PathBuf::from(rel)
+                } else {
+                    dir.join(rel)
+                };
+                let sub = load_items(&target, loaded, imported, Some((&item, &display, &src)));
+                out.extend(sub);
+            }
+            _ => out.push(item),
+        }
+    }
+    out
 }
 
 /// Parse a whole source file into a module, collecting recoverable errors.

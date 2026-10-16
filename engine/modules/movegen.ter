@@ -1,0 +1,534 @@
+// Bitboard move generation: magic tables, sliding attacks, make/unmake, FEN, perft.
+
+import "types.ter";
+
+static KN: [u64; 64] = [0; 64];
+static KG: [u64; 64] = [0; 64];
+static PA0: [u64; 64] = [0; 64];
+static PA1: [u64; 64] = [0; 64];
+static RMASK: [u64; 64] = [0; 64];
+static BMASK: [u64; 64] = [0; 64];
+static RSHIFT: [i64; 64] = [0; 64];
+static BSHIFT: [i64; 64] = [0; 64];
+static ROFF: [i64; 64] = [0; 64];
+static BOFF: [i64; 64] = [0; 64];
+static RTBL: [u64; 300000] = [0; 300000];
+static BTBL: [u64; 131072] = [0; 131072];
+static GACC_R: i64 = 0;
+static GACC_B: i64 = 0;
+
+static GMV: [i64; 32768] = [0; 32768];
+static GCOUNT: i64 = 0;
+static GBASE: i64 = 0;
+
+static ZP: [i64; 768] = [0; 768];
+static ZSTD: i64 = 0;
+static ZCASTLE: [i64; 16] = [0; 16];
+static ZEP: [i64; 64] = [0; 64];
+fn nextr(z: i64) -> i64 { return z * 6364136223846793005 + 1442695040888963407; }
+fn zidx(pt: i64, col: i64, sq: i64) -> i64 { return ((pt - 1) * 2 + col) * 64 + sq; }
+fn rng_init() {
+    var s: i64 = 12345;
+    var i: i64 = 0;
+    while i < 768 { s = nextr(s); ZP[i] = s; i += 1; }
+    s = nextr(s); ZSTD = s;
+    i = 0; while i < 16 { s = nextr(s); ZCASTLE[i] = s; i += 1; }
+    i = 0; while i < 64 { s = nextr(s); ZEP[i] = s; i += 1; }
+}
+
+fn bit(sq: i64) -> u64 { return ONE << sq; }
+fn valid(r: i64, f: i64) -> bool { return r >= 0 && r <= 7 && f >= 0 && f <= 7; }
+fn absb(x: i64) -> i64 { if x < 0 { return 0 - x; } return x; }
+fn colb(p: i64) -> i64 { if p > 0 { return 0; } if p < 0 { return 1; } return 2; }
+fn allones() -> u64 { return 0 - 1; }
+
+fn piece_at(pos: Pos, sq: i64) -> i64 {
+    let b: u64 = bit(sq);
+    if (pos.occ[0] & b) == 0 && (pos.occ[1] & b) == 0 { return 0; }
+    var pt: i64 = 0;
+    if (pos.bb[PAWN] & b) != 0 { pt = PAWN; }
+    if (pos.bb[KNIGHT] & b) != 0 { pt = KNIGHT; }
+    if (pos.bb[BISHOP] & b) != 0 { pt = BISHOP; }
+    if (pos.bb[ROOK] & b) != 0 { pt = ROOK; }
+    if (pos.bb[QUEEN] & b) != 0 { pt = QUEEN; }
+    if (pos.bb[KING] & b) != 0 { pt = KING; }
+    if (pt == 0) { return 0; }
+    if (pos.occ[0] & b) != 0 { return pt; }
+    return 0 - pt;
+}
+
+fn rayr(occ: u64, r: i64, f: i64, dr: i64, df: i64) -> u64 {
+    var a: u64 = 0;
+    var rr: i64 = r;
+    var ff: i64 = f;
+    while true {
+        rr = rr + dr;
+        ff = ff + df;
+        if !valid(rr, ff) { break; }
+        let t: i64 = rr * 8 + ff;
+        a = a | bit(t);
+        if (occ & bit(t)) != 0 { break; }
+    }
+    return a;
+}
+fn rm_mask(r: i64, f: i64, dr: i64, df: i64) -> u64 {
+    // relevant occupancy: every ray square except the terminal (edge) one, so a
+    // blocker like a2 for an a1 rook is still represented.
+    var m: u64 = 0;
+    var rr: i64 = r;
+    var ff: i64 = f;
+    while valid(rr + dr, ff + df) {
+        rr = rr + dr;
+        ff = ff + df;
+        if valid(rr + dr, ff + df) {
+            m = m | bit(rr * 8 + ff);
+        }
+    }
+    return m;
+}
+fn pow2(n: i64) -> i64 { var p: i64 = 1; var i: i64 = 0; while i < n { p = p * 2; i = i + 1; } return p; }
+
+fn init_bb() {
+    var sq: i64 = 0;
+    while sq < 64 {
+        let r: i64 = sq >> 3;
+        let f: i64 = sq & 7;
+        // knights
+        var kn: u64 = 0;
+        var dr: i64 = 0 - 2;
+        while dr <= 2 {
+            var df: i64 = 0 - 2;
+            while df <= 2 {
+                let ak: bool = (absb(dr) == 1 && absb(df) == 2) || (absb(dr) == 2 && absb(df) == 1);
+                if ak && valid(r + dr, f + df) { kn = kn | bit((r + dr) * 8 + (f + df)); }
+                df = df + 1;
+            }
+            dr = dr + 1;
+        }
+        KN[sq] = kn;
+        // king
+        var kg: u64 = 0;
+        var kr: i64 = 0 - 1;
+        while kr <= 1 {
+            var kf: i64 = 0 - 1;
+            while kf <= 1 {
+                if (kr != 0 || kf != 0) && valid(r + kr, f + kf) { kg = kg | bit((r + kr) * 8 + (f + kf)); }
+                kf = kf + 1;
+            }
+            kr = kr + 1;
+        }
+        KG[sq] = kg;
+        // pawn attacks
+        var pa0: u64 = 0;
+        if valid(r + 1, f - 1) { pa0 = pa0 | bit((r + 1) * 8 + (f - 1)); }
+        if valid(r + 1, f + 1) { pa0 = pa0 | bit((r + 1) * 8 + (f + 1)); }
+        PA0[sq] = pa0;
+        var pa1: u64 = 0;
+        if valid(r - 1, f - 1) { pa1 = pa1 | bit((r - 1) * 8 + (f - 1)); }
+        if valid(r - 1, f + 1) { pa1 = pa1 | bit((r - 1) * 8 + (f + 1)); }
+        PA1[sq] = pa1;
+        // rook (edges excluded from the mask)
+        let rm: u64 = rm_mask(r, f, 1, 0) | rm_mask(r, f, 0 - 1, 0) | rm_mask(r, f, 0, 1) | rm_mask(r, f, 0, 0 - 1);
+        let rbits: i64 = popcount(rm);
+        RMASK[sq] = rm;
+        RSHIFT[sq] = 64 - rbits;
+        ROFF[sq] = GACC_R;
+        GACC_R = GACC_R + pow2(rbits);
+        var sub: u64 = rm;
+        while true {
+            let idx: i64 = btable_index(sub, rm, RSHIFT[sq]);
+            var atk: u64 = 0;
+            atk = atk | rayr(sub, r, f, 1, 0);
+            atk = atk | rayr(sub, r, f, 0 - 1, 0);
+            atk = atk | rayr(sub, r, f, 0, 1);
+            atk = atk | rayr(sub, r, f, 0, 0 - 1);
+            RTBL[ROFF[sq] + idx] = atk;
+            if sub == 0 { break; }
+            sub = (sub - 1) & rm;
+        }
+        // bishop
+        let bm: u64 = rm_mask(r, f, 1, 1) | rm_mask(r, f, 1, 0 - 1) | rm_mask(r, f, 0 - 1, 1) | rm_mask(r, f, 0 - 1, 0 - 1);
+        let bbits: i64 = popcount(bm);
+        BMASK[sq] = bm;
+        BSHIFT[sq] = 64 - bbits;
+        BOFF[sq] = GACC_B;
+        GACC_B = GACC_B + pow2(bbits);
+        var bsub: u64 = bm;
+        while true {
+            let bidx: i64 = btable_index(bsub, bm, BSHIFT[sq]);
+            var batk: u64 = 0;
+            batk = batk | rayr(bsub, r, f, 1, 1);
+            batk = batk | rayr(bsub, r, f, 1, 0 - 1);
+            batk = batk | rayr(bsub, r, f, 0 - 1, 1);
+            batk = batk | rayr(bsub, r, f, 0 - 1, 0 - 1);
+            BTBL[BOFF[sq] + bidx] = batk;
+            if bsub == 0 { break; }
+            bsub = (bsub - 1) & bm;
+        }
+        sq = sq + 1;
+    }
+}
+
+fn rook_attacks(pos: Pos, sq: i64) -> u64 { return RTBL[ROFF[sq] + btable_index(pos.all, RMASK[sq], RSHIFT[sq])]; }
+fn bish_attacks(pos: Pos, sq: i64) -> u64 { return BTBL[BOFF[sq] + btable_index(pos.all, BMASK[sq], BSHIFT[sq])]; }
+
+fn attacked64(pos: Pos, sq: i64, by: i64) -> bool {
+    let r: i64 = sq >> 3;
+    let f: i64 = sq & 7;
+    if by == 0 {
+        if r - 1 >= 0 {
+            if f - 1 >= 0 && (pos.bb[PAWN] & pos.occ[0] & bit(sq - 9)) != 0 { return true; }
+            if f + 1 <= 7 && (pos.bb[PAWN] & pos.occ[0] & bit(sq - 7)) != 0 { return true; }
+        }
+    } else {
+        if r + 1 <= 7 {
+            if f - 1 >= 0 && (pos.bb[PAWN] & pos.occ[1] & bit(sq + 7)) != 0 { return true; }
+            if f + 1 <= 7 && (pos.bb[PAWN] & pos.occ[1] & bit(sq + 9)) != 0 { return true; }
+        }
+    }
+    let o: u64 = pos.occ[by];
+    if (KN[sq] & pos.bb[KNIGHT] & o) != 0 { return true; }
+    if (KG[sq] & pos.bb[KING] & o) != 0 { return true; }
+    if (bish_attacks(pos, sq) & (pos.bb[BISHOP] | pos.bb[QUEEN]) & o) != 0 { return true; }
+    if (rook_attacks(pos, sq) & (pos.bb[ROOK] | pos.bb[QUEEN]) & o) != 0 { return true; }
+    return false;
+}
+
+// ---- movegen --------------------------------------------------------------
+fn add_mv(f: i64, t: i64, promo: i64) {
+    GMV[GBASE + GCOUNT] = f * 1000000 + t * 1000 + promo;
+    GCOUNT += 1;
+}
+fn add_promo(f: i64, t: i64) {
+    add_mv(f, t, QUEEN); add_mv(f, t, ROOK); add_mv(f, t, BISHOP); add_mv(f, t, KNIGHT);
+}
+fn push_plain(f: i64, targets: u64) {
+    var b: u64 = targets;
+    while b != 0 {
+        let lsb: u64 = b & (0 - b);
+        let t: i64 = ctz(lsb);
+        add_mv(f, t, 0);
+        b = b ^ lsb;
+    }
+}
+fn gen_pawn(pos: Pos, sq: i64, col: i64, emptyset: u64, opp: u64) {
+    let r: i64 = sq >> 3;
+    if col == 0 {
+        let one: i64 = sq + 8;
+        if (emptyset & bit(one)) != 0 {
+            if one >= 56 { add_promo(sq, one); } else {
+                add_mv(sq, one, 0);
+                if r == 1 { let two: i64 = sq + 16; if (emptyset & bit(two)) != 0 { add_mv(sq, two, 0); } }
+            }
+        }
+        let atk: u64 = PA0[sq] & opp;
+        var b: u64 = atk;
+        while b != 0 {
+            let lsb: u64 = b & (0 - b);
+            let t: i64 = ctz(lsb);
+            if t >= 56 { add_promo(sq, t); } else { add_mv(sq, t, 0); }
+            b = b ^ lsb;
+        }
+        if pos.ep >= 0 && (PA0[sq] & bit(pos.ep)) != 0 { add_mv(sq, pos.ep, 0); }
+    } else {
+        let one: i64 = sq - 8;
+        if (emptyset & bit(one)) != 0 {
+            if one <= 7 { add_promo(sq, one); } else {
+                add_mv(sq, one, 0);
+                if r == 6 { let two: i64 = sq - 16; if (emptyset & bit(two)) != 0 { add_mv(sq, two, 0); } }
+            }
+        }
+        let atk: u64 = PA1[sq] & opp;
+        var b: u64 = atk;
+        while b != 0 {
+            let lsb: u64 = b & (0 - b);
+            let t: i64 = ctz(lsb);
+            if t <= 7 { add_promo(sq, t); } else { add_mv(sq, t, 0); }
+            b = b ^ lsb;
+        }
+        if pos.ep >= 0 && (PA1[sq] & bit(pos.ep)) != 0 { add_mv(sq, pos.ep, 0); }
+    }
+}
+fn gen_castle(pos: Pos, sq: i64, col: i64) {
+    let other: i64 = 1 - col;
+    if col == 0 && sq == 4 {
+        if (pos.castle & 1) != 0 && piece_at(pos, 5) == 0 && piece_at(pos, 6) == 0 && piece_at(pos, 7) == ROOK {
+            if !attacked64(pos, 4, other) && !attacked64(pos, 5, other) && !attacked64(pos, 6, other) { add_mv(4, 6, 0); }
+        }
+        if (pos.castle & 2) != 0 && piece_at(pos, 3) == 0 && piece_at(pos, 2) == 0 && piece_at(pos, 1) == 0 && piece_at(pos, 0) == ROOK {
+            if !attacked64(pos, 4, other) && !attacked64(pos, 3, other) && !attacked64(pos, 2, other) { add_mv(4, 2, 0); }
+        }
+    }
+    if col == 1 && sq == 60 {
+        if (pos.castle & 4) != 0 && piece_at(pos, 61) == 0 && piece_at(pos, 62) == 0 && piece_at(pos, 63) == 0 - ROOK {
+            if !attacked64(pos, 60, other) && !attacked64(pos, 61, other) && !attacked64(pos, 62, other) { add_mv(60, 62, 0); }
+        }
+        if (pos.castle & 8) != 0 && piece_at(pos, 59) == 0 && piece_at(pos, 58) == 0 && piece_at(pos, 57) == 0 && piece_at(pos, 56) == 0 - ROOK {
+            if !attacked64(pos, 60, other) && !attacked64(pos, 59, other) && !attacked64(pos, 58, other) { add_mv(60, 58, 0); }
+        }
+    }
+}
+fn gen(pos: Pos, ply: i64) -> i64 {
+    GBASE = ply * BAND;
+    GCOUNT = 0;
+    let col: i64 = pos.stm;
+    let own: u64 = pos.occ[col];
+    let opp: u64 = pos.occ[1 - col];
+    let emptyset: u64 = allones() ^ pos.all;
+    var pw: u64 = pos.bb[PAWN] & own;
+    while pw != 0 {
+        let lsb: u64 = pw & (0 - pw);
+        let sq: i64 = ctz(lsb);
+        gen_pawn(pos, sq, col, emptyset, opp);
+        pw = pw ^ lsb;
+    }
+    var kn: u64 = pos.bb[KNIGHT] & own;
+    while kn != 0 {
+        let lsb: u64 = kn & (0 - kn);
+        let sq: i64 = ctz(lsb);
+        push_plain(sq, KN[sq] & (allones() ^ own));
+        kn = kn ^ lsb;
+    }
+    var bs: u64 = pos.bb[BISHOP] & own;
+    while bs != 0 {
+        let lsb: u64 = bs & (0 - bs);
+        let sq: i64 = ctz(lsb);
+        push_plain(sq, bish_attacks(pos, sq) & (allones() ^ own));
+        bs = bs ^ lsb;
+    }
+    var rk: u64 = pos.bb[ROOK] & own;
+    while rk != 0 {
+        let lsb: u64 = rk & (0 - rk);
+        let sq: i64 = ctz(lsb);
+        push_plain(sq, rook_attacks(pos, sq) & (allones() ^ own));
+        rk = rk ^ lsb;
+    }
+    var qn: u64 = pos.bb[QUEEN] & own;
+    while qn != 0 {
+        let lsb: u64 = qn & (0 - qn);
+        let sq: i64 = ctz(lsb);
+        push_plain(sq, (rook_attacks(pos, sq) | bish_attacks(pos, sq)) & (allones() ^ own));
+        qn = qn ^ lsb;
+    }
+    var kg: u64 = pos.bb[KING] & own;
+    while kg != 0 {
+        let lsb: u64 = kg & (0 - kg);
+        let sq: i64 = ctz(lsb);
+        push_plain(sq, KG[sq] & (allones() ^ own));
+        gen_castle(pos, sq, col);
+        kg = kg ^ lsb;
+    }
+    return GCOUNT;
+}
+
+// ---- make (copy-make) -----------------------------------------------------
+fn make(pos: Pos, mv: i64) -> Pos {
+    var c: Pos = pos;
+    let f: i64 = mv / 1000000;
+    let t: i64 = (mv / 1000) % 1000;
+    let promo: i64 = mv % 1000;
+    let piece: i64 = piece_at(pos, f);
+    let pt: i64 = absb(piece);
+    let col: i64 = colb(piece);
+    c.bb[pt] = c.bb[pt] ^ bit(f);
+    c.occ[col] = c.occ[col] ^ bit(f);
+    let cap: i64 = piece_at(pos, t);
+    if cap != 0 {
+        c.bb[absb(cap)] = c.bb[absb(cap)] ^ bit(t);
+        c.occ[colb(cap)] = c.occ[colb(cap)] ^ bit(t);
+    }
+    if pt == PAWN && t == pos.ep && cap == 0 {
+        var capsq: i64 = t - 8;
+        if col != 0 { capsq = t + 8; }
+        c.bb[PAWN] = c.bb[PAWN] ^ bit(capsq);
+        c.occ[1 - col] = c.occ[1 - col] ^ bit(capsq);
+    }
+    if promo != 0 { c.bb[promo] = c.bb[promo] | bit(t); }
+    else { c.bb[pt] = c.bb[pt] | bit(t); }    c.occ[col] = c.occ[col] | bit(t);
+    if NNUE_ON == 1 {
+        NCNT = 0;
+        var npt: i64 = pt;
+        if promo != 0 { npt = promo; }
+        nnue_mark(feat(col, pt, f, 0), 0 - 1, 0);
+        nnue_mark(feat(col, pt, f, 1), 0 - 1, 1);
+        nnue_mark(feat(col, npt, t, 0), 1, 0);
+        nnue_mark(feat(col, npt, t, 1), 1, 1);
+        if cap != 0 {
+            nnue_mark(feat(colb(cap), absb(cap), t, 0), 0 - 1, 0);
+            nnue_mark(feat(colb(cap), absb(cap), t, 1), 0 - 1, 1);
+        }
+        if pt == PAWN && t == pos.ep && cap == 0 {
+            var epc: i64 = t - 8;
+            if col != 0 { epc = t + 8; }
+            nnue_mark(feat(1 - col, PAWN, epc, 0), 0 - 1, 0);
+            nnue_mark(feat(1 - col, PAWN, epc, 1), 0 - 1, 1);
+        }
+        c = nnue_apply(c);
+    }
+    if pt == KING && absb(t - f) == 2 {
+        if t > f {
+            c.bb[ROOK] = (c.bb[ROOK] ^ bit(f + 3)) | bit(f + 1);
+            c.occ[col] = (c.occ[col] ^ bit(f + 3)) | bit(f + 1);
+            if NNUE_ON == 1 {
+                NCNT = 0;
+                nnue_mark(feat(col, ROOK, f + 3, 0), 0 - 1, 0);
+                nnue_mark(feat(col, ROOK, f + 3, 1), 0 - 1, 1);
+                nnue_mark(feat(col, ROOK, f + 1, 0), 1, 0);
+                nnue_mark(feat(col, ROOK, f + 1, 1), 1, 1);
+                c = nnue_apply(c);
+            }
+
+
+        } else {
+            c.bb[ROOK] = (c.bb[ROOK] ^ bit(f - 4)) | bit(f - 1);
+            c.occ[col] = (c.occ[col] ^ bit(f - 4)) | bit(f - 1);
+            if NNUE_ON == 1 {
+                NCNT = 0;
+                nnue_mark(feat(col, ROOK, f - 4, 0), 0 - 1, 0);
+                nnue_mark(feat(col, ROOK, f - 4, 1), 0 - 1, 1);
+                nnue_mark(feat(col, ROOK, f - 1, 0), 1, 0);
+                nnue_mark(feat(col, ROOK, f - 1, 1), 1, 1);
+                c = nnue_apply(c);
+            }
+
+
+        }
+    }
+    if pt == KING { c.king[col] = t; }
+    var cr: i64 = pos.castle;
+    if f == 4 || t == 4 { cr = cr & 12; }
+    if f == 60 || t == 60 { cr = cr & 3; }
+    if f == 0 || t == 0 { cr = cr & 13; }
+    if f == 7 || t == 7 { cr = cr & 14; }
+    if f == 56 || t == 56 { cr = cr & 7; }
+    if f == 63 || t == 63 { cr = cr & 11; }
+    c.castle = cr;
+    if pt == PAWN && absb(t - f) == 16 { c.ep = (f + t) / 2; } else { c.ep = 0 - 1; }
+    c.all = c.occ[0] | c.occ[1];
+    c.stm = 1 - pos.stm;
+    c.key = pos.key;
+    c.key = c.key ^ ZP[zidx(pt, col, f)];
+    if cap != 0 { c.key = c.key ^ ZP[zidx(absb(cap), colb(cap), t)]; }
+    if pt == PAWN && t == pos.ep && cap == 0 {
+        var kcap: i64 = t - 8;
+        if col != 0 { kcap = t + 8; }
+        c.key = c.key ^ ZP[zidx(PAWN, 1 - col, kcap)];
+    }
+    if promo != 0 { c.key = c.key ^ ZP[zidx(promo, col, t)]; } else { c.key = c.key ^ ZP[zidx(pt, col, t)]; }
+    if pt == KING && absb(t - f) == 2 {
+        if t > f {
+            c.key = c.key ^ ZP[zidx(ROOK, col, f + 3)];
+            c.key = c.key ^ ZP[zidx(ROOK, col, f + 1)];
+        } else {
+            c.key = c.key ^ ZP[zidx(ROOK, col, f - 4)];
+            c.key = c.key ^ ZP[zidx(ROOK, col, f - 1)];
+        }
+    }
+    c.key = c.key ^ ZSTD;
+    c.key = c.key ^ ZCASTLE[pos.castle];
+    c.key = c.key ^ ZCASTLE[c.castle];
+    if pos.ep >= 0 { c.key = c.key ^ ZEP[pos.ep]; }
+    if c.ep >= 0 { c.key = c.key ^ ZEP[c.ep]; }
+    return c;
+}
+
+// ---- FEN ------------------------------------------------------------------
+fn fen_piece(ch: i64) -> i64 {
+    if ch == 80 { return PAWN; } if ch == 78 { return KNIGHT; }
+    if ch == 66 { return BISHOP; } if ch == 82 { return ROOK; }
+    if ch == 81 { return QUEEN; } if ch == 75 { return KING; }
+    if ch == 112 { return 0 - PAWN; } if ch == 110 { return 0 - KNIGHT; }
+    if ch == 98 { return 0 - BISHOP; } if ch == 114 { return 0 - ROOK; }
+    if ch == 113 { return 0 - QUEEN; } if ch == 107 { return 0 - KING; }
+    return 0;
+}
+fn from_fen_bb(fen: str, base: i64) -> Pos {
+    var p: Pos = Pos { bb: [0; 7], occ: [0; 2], acc: [0; 64], all: 0, stm: 0, ep: 0 - 1, castle: 0, king: [4, 60], key: 0 };
+    var idx: i64 = base;
+    var fr: i64 = 8;
+    while fr >= 1 {
+        let row: i64 = fr - 1;
+        var file: i64 = 0;
+        while file <= 7 {
+            let ch: i64 = fen[idx];
+            idx = idx + 1;
+            if ch >= 49 && ch <= 56 { file = file + (ch - 48); }
+            else {
+                let sq: i64 = row * 8 + file;
+                let pc: i64 = fen_piece(ch);
+                if pc != 0 {
+                    p.bb[absb(pc)] = p.bb[absb(pc)] | bit(sq);
+                    p.occ[colb(pc)] = p.occ[colb(pc)] | bit(sq);
+                    if pc == KING { p.king[0] = sq; }
+                    if pc == 0 - KING { p.king[1] = sq; }
+                }
+                file = file + 1;
+            }
+        }
+        if fr > 1 { idx = idx + 1; }
+        fr = fr - 1;
+    }
+    idx = idx + 1;
+    let stmch: i64 = fen[idx];
+    idx = idx + 1;
+    if stmch == 98 { p.stm = 1; } else { p.stm = 0; }
+    idx = idx + 1;
+    var castle: i64 = 0;
+    while idx <= len(fen) - 1 && fen[idx] != 32 {
+        let cm: i64 = fen[idx];
+        if cm == 75 { castle = castle | 1; }
+        if cm == 81 { castle = castle | 2; }
+        if cm == 107 { castle = castle | 4; }
+        if cm == 113 { castle = castle | 8; }
+        idx = idx + 1;
+    }
+    p.castle = castle;
+    idx = idx + 1;
+    if fen[idx] == 45 { p.ep = 0 - 1; idx = idx + 1; }
+    else {
+        let ef: i64 = fen[idx] - 96;
+        let er: i64 = fen[idx + 1] - 48;
+        p.ep = (er - 1) * 8 + (ef - 1);
+        idx = idx + 2;
+    }
+    var kk: i64 = 0;
+    var col2: i64 = 0;
+    while col2 < 2 {
+        var pt3: i64 = 1;
+        while pt3 <= 6 {
+            var b: u64 = p.bb[pt3] & p.occ[col2];
+            while b != 0 {
+                let lsb: u64 = b & (0 - b);
+                let sq: i64 = ctz(lsb);
+                b = b ^ lsb;
+                kk = kk ^ ZP[zidx(pt3, col2, sq)];
+            }
+            pt3 += 1;
+        }
+        col2 += 1;
+    }
+    if p.stm == 1 { kk = kk ^ ZSTD; }
+    kk = kk ^ ZCASTLE[p.castle];
+    if p.ep >= 0 { kk = kk ^ ZEP[p.ep]; }
+    p.key = kk;
+    p.all = p.occ[0] | p.occ[1];
+    if NNUE_ON == 1 { p = nnue_seed(p); }
+    return p;
+}
+fn perft_bb(pos: Pos, depth: i64, ply: i64) -> i64 {
+    if depth == 0 { return 1; }
+    let n: i64 = gen(pos, ply);
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let mv: i64 = GMV[ply * BAND + i];
+        let child: Pos = make(pos, mv);
+        let moved: i64 = pos.stm;
+        if !attacked64(child, child.king[moved], 1 - moved) {
+            if depth == 1 { total = total + 1; }
+            else { total = total + perft_bb(child, depth - 1, ply + 1); }
+        }
+        i = i + 1;
+    }
+    return total;
+}

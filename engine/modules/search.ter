@@ -1,0 +1,293 @@
+// Search: transposition table, move ordering, quiescence, iterative deepening.
+
+import "types.ter";
+import "movegen.ter";
+import "eval.ter";
+
+// ---- search (bitboard) ----------------------------------------------------
+static TT_KEY: [i64; 262144] = [0; 262144];
+static TT_MOVE: [i64; 262144] = [0; 262144];
+static TT_SCORE: [i64; 262144] = [0; 262144];
+static TT_DEPTH: [i64; 262144] = [0; 262144];
+static TT_FLAG: [i64; 262144] = [0; 262144];
+static KEYSTACK: [i64; 256] = [0; 256];
+static NODES: i64 = 0;
+static DEADLINE: i64 = 0;
+static QUIET: i64 = 0;
+static BESTSCORE: i64 = 0;
+
+fn in_check_bb(pos: Pos, col: i64) -> bool { return attacked64(pos, pos.king[col], 1 - col); }
+
+static T0: i64 = 0;
+static ABORT: i64 = 0;
+static NODELIMIT: i64 = 0;
+
+static MSCR: [i64; 256] = [0; 256];
+static KILL1: [i64; 128] = [0; 128];
+static KILL2: [i64; 128] = [0; 128];
+static HIST: [i64; 8192] = [0; 8192];
+
+fn mv_score(pos: Pos, mv: i64, ply: i64) -> i64 {
+    let f: i64 = mv / 1000000;
+    let rem: i64 = mv - f * 1000000;
+    let tt: i64 = rem / 1000;
+    let pr: i64 = rem % 1000;
+    let attacker: i64 = absb(piece_at(pos, f));
+    let victim: i64 = absb(piece_at(pos, tt));
+    if victim != 0 || (attacker == PAWN && tt == pos.ep) {
+        if victim == 0 { return 1000000 + PAWN * 100 - attacker + pr * 500; }
+        return 1000000 + victim * 100 - attacker + pr * 500;
+    }
+    if mv == KILL1[ply] { return 900000; }
+    if mv == KILL2[ply] { return 800000; }
+    return HIST[pos.stm * 768 + f * 64 + tt];
+}
+
+fn order_moves(pos: Pos, ply: i64, n: i64) {
+    let base: i64 = ply * BAND;
+    var i: i64 = 0;
+    while i < n { MSCR[i] = mv_score(pos, GMV[base + i], ply); i += 1; }
+    i = 0;
+    while i < n {
+        var best: i64 = i;
+        var j: i64 = i + 1;
+        while j < n {
+            if MSCR[j] > MSCR[best] { best = j; }
+            j += 1;
+        }
+        if best != i {
+            let tm: i64 = GMV[base + i];
+            GMV[base + i] = GMV[base + best];
+            GMV[base + best] = tm;
+            let ts: i64 = MSCR[i];
+            MSCR[i] = MSCR[best];
+            MSCR[best] = ts;
+        }
+        i += 1;
+    }
+}
+
+fn prepend_best(ply: i64, n: i64, bestmv: i64) {
+    if bestmv < 0 { return; }
+    let base: i64 = ply * BAND;
+    var found: i64 = 0 - 1;
+    var i: i64 = 0;
+    while i < n {
+        if GMV[base + i] == bestmv { found = i; i = n; }
+        i += 1;
+    }
+    if found > 0 { let tmp: i64 = GMV[base]; GMV[base] = GMV[base + found]; GMV[base + found] = tmp; }
+}
+
+fn quiesce(pos: Pos, mut_a: i64, beta: i64, ply: i64) -> i64 {
+    NODES += 1;
+    if ABORT == 1 { return mut_a; }
+    if (NODES & 1023) == 0 {
+        if NODELIMIT > 0 && NODES >= NODELIMIT { ABORT = 1; return mut_a; }
+        if DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
+    }
+    if ply >= 120 { return eval_pos_bb(pos); }
+    let incheck: bool = in_check_bb(pos, pos.stm);
+    let stand: i64 = eval_pos_bb(pos);
+    if stand >= beta { return stand; }
+    var alpha: i64 = mut_a;
+    if stand > alpha { alpha = stand; }
+    let n: i64 = gen(pos, ply);
+    order_moves(pos, ply, n);
+    var legal: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let mv: i64 = GMV[ply * BAND + i];
+        let f: i64 = mv / 1000000;
+        let rem: i64 = mv - f * 1000000;
+        let tt: i64 = rem / 1000;
+        let pr: i64 = rem % 1000;
+        let attacker: i64 = absb(piece_at(pos, f));
+        let victim: i64 = absb(piece_at(pos, tt));
+        let iscap: bool = victim != 0 || pr != 0 || (attacker == PAWN && tt == pos.ep);
+        if iscap || incheck {
+            var tryit: bool = true;
+            if !incheck {
+                var gain: i64 = PAWN * 100;
+                if victim != 0 { gain = victim * 100; }
+                if stand + gain + 150 < alpha { tryit = false; }
+            }
+            if tryit {
+                let child: Pos = make(pos, mv);
+                if !in_check_bb(child, pos.stm) {
+                    legal += 1;
+                    let sc: i64 = 0 - quiesce(child, 0 - beta, 0 - alpha, ply + 1);
+                    if sc >= beta { return beta; }
+                    if sc > alpha { alpha = sc; }
+                }
+            }
+        }
+        i += 1;
+    }
+    if legal == 0 && incheck { return 0 - 100000 + ply; }
+    return alpha;
+}
+
+fn negamax(pos: Pos, depth: i64, mut_a: i64, beta: i64, ply: i64) -> i64 {
+    if ply >= 120 { return eval_pos_bb(pos); }
+    NODES += 1;
+    if ABORT == 1 { return mut_a; }
+    if (NODES & 1023) == 0 {
+        if NODELIMIT > 0 && NODES >= NODELIMIT { ABORT = 1; return mut_a; }
+        if DEADLINE > 0 && now_ms() >= DEADLINE { ABORT = 1; return mut_a; }
+    }
+    let key: i64 = pos.key;
+    KEYSTACK[ply] = key;
+    var ri: i64 = 0;
+    while ri < ply {
+        if KEYSTACK[ri] == key { return 0; }
+        ri += 1;
+    }
+    let alpha0: i64 = mut_a;
+    let incheck: bool = in_check_bb(pos, pos.stm);
+    var d: i64 = depth;
+    if incheck { d = d + 1; }
+    let idx: i64 = key & 262143;
+    if TT_KEY[idx] == key && TT_DEPTH[idx] >= depth && !incheck {
+        let sc: i64 = TT_SCORE[idx];
+        let fl: i64 = TT_FLAG[idx];
+        if fl == 1 { return sc; }
+        if fl == 2 && sc >= beta { return sc; }
+        if fl == 3 && sc <= mut_a { return sc; }
+    }
+    let hint: i64 = TT_MOVE[idx];
+    if d <= 0 { return quiesce(pos, mut_a, beta, ply); }
+    if depth >= 3 && !incheck {
+        let heavy: u64 = pos.bb[KNIGHT] | pos.bb[BISHOP] | pos.bb[ROOK] | pos.bb[QUEEN];
+        if (heavy & pos.occ[pos.stm]) != 0 {
+            var c: Pos = pos;
+            c.stm = 1 - pos.stm;
+            c.ep = 0 - 1;
+            c.key = c.key ^ ZSTD;
+            let R: i64 = 2 + depth / 4;
+            let sc: i64 = 0 - negamax(c, depth - R, 0 - beta, 0 - beta + 1, ply + 1);
+            if sc >= beta {
+                if sc > 99900 { return beta; }
+                return sc;
+            }
+        }
+    }
+    let n: i64 = gen(pos, ply);
+    order_moves(pos, ply, n);
+    if hint >= 0 { prepend_best(ply, n, hint); }
+    var legal: i64 = 0;
+    var best: i64 = 0 - 100000000;
+    var bestmv: i64 = 0 - 1;
+    var alpha: i64 = mut_a;
+    var i: i64 = 0;
+    while i < n {
+        let mv: i64 = GMV[ply * BAND + i];
+        let f: i64 = mv / 1000000;
+        let rem: i64 = mv - f * 1000000;
+        let tt: i64 = rem / 1000;
+        let pr: i64 = rem % 1000;
+        let attacker: i64 = absb(piece_at(pos, f));
+        let victim: i64 = absb(piece_at(pos, tt));
+        let iscap: bool = victim != 0 || pr != 0 || (attacker == PAWN && tt == pos.ep);
+        let child: Pos = make(pos, mv);
+        if !in_check_bb(child, pos.stm) {
+            legal += 1;
+            var red: i64 = 0;
+            if !iscap && !incheck && depth >= 3 && legal > 3 {
+                red = 1;
+                if legal > 8 { red = 2; }
+            }
+            // PVS was tried here (probe late moves with a null window around the
+            // current alpha, re-search on a hit). It measured *slower*: with this
+            // transpo table, bound entries written by the probes cause enough
+            // re-searches to give back the savings -- 1.20M vs 1.02M nodes at
+            // depth 9 on an opening position. Left out until the TT stores bound
+            // types properly (see docs/results/pvs-2026-10-14.md).
+            let dd: i64 = d - 1 - red;
+            var sc: i64 = 0 - negamax(child, dd, 0 - beta, 0 - alpha, ply + 1);
+            if sc > best { best = sc; bestmv = mv; }
+            if sc > alpha { alpha = sc; }
+            if alpha >= beta {
+                if !iscap {
+                    let hidx: i64 = pos.stm * 768 + f * 64 + tt;
+                    HIST[hidx] = HIST[hidx] + depth * depth;
+                    if HIST[hidx] > 6000 { HIST[hidx] = 3000; }
+                    if KILL1[ply] != mv {
+                        KILL2[ply] = KILL1[ply];
+                        KILL1[ply] = mv;
+                    }
+                }
+                i = n;
+            }
+        }
+        i += 1;
+    }
+    if legal == 0 {
+        if incheck { return 0 - 100000 + ply; }
+        return 0;
+    }
+    if best > 0 - 99900 && best < 99900 {
+        TT_KEY[idx] = key;
+        TT_DEPTH[idx] = depth;
+        TT_MOVE[idx] = bestmv;
+        TT_SCORE[idx] = best;
+        if best <= alpha0 { TT_FLAG[idx] = 3; } else if best >= beta { TT_FLAG[idx] = 2; } else { TT_FLAG[idx] = 1; }
+    }
+    return best;
+}
+
+fn search_root(pos: Pos, maxdepth: i64) -> i64 {
+    NODES = 0;
+    T0 = now_ms();
+    var bestmv: i64 = 0 - 1;
+    var best: i64 = 0 - 100000000;
+    var stop: i64 = 0;
+    var d: i64 = 1;
+    while d <= maxdepth && stop == 0 {
+        ABORT = 0;
+        let n: i64 = gen(pos, 0);
+        order_moves(pos, 0, n);
+        if bestmv >= 0 { prepend_best(0, n, bestmv); }
+        var alpha: i64 = 0 - 100000000;
+        var localbest: i64 = 0 - 100000000;
+        var localmv: i64 = 0 - 1;
+        var ext: i64 = 0;
+        if in_check_bb(pos, pos.stm) { ext = 1; }
+        var i: i64 = 0;
+        while i < n {
+            let mv: i64 = GMV[i];
+            let child: Pos = make(pos, mv);
+            if !in_check_bb(child, pos.stm) {
+                let sc: i64 = 0 - negamax(child, d + ext - 1, 0 - 100000000, 0 - alpha, 1);
+                if sc > localbest { localbest = sc; localmv = mv; }
+                if sc > alpha { alpha = sc; }
+            }
+            i += 1;
+        }
+        if ABORT == 1 { stop = 1; }
+        else if localmv >= 0 { bestmv = localmv; best = localbest; }
+        else { stop = 1; }
+        if QUIET == 0 {
+            var el: i64 = now_ms() - T0;
+            var nn: i64 = 0;
+            if el > 0 { nn = (NODES * 1000) / el; }
+            putstr("info depth "); putint(d);
+            if best > 99000 || best < 0 - 99000 {
+                var mp: i64 = 0;
+                if best < 0 { mp = best + 100000; } else { mp = 100000 - best; }
+                putstr(" score mate "); putint(mp / 2);
+            } else {
+                putstr(" score cp "); putint(best);
+            }
+            putstr(" nodes "); putint(NODES);
+            putstr(" nps "); putint(nn);
+            putc(10);
+        }
+        if d >= maxdepth { stop = 1; }
+        if DEADLINE > 0 && now_ms() >= DEADLINE { stop = 1; }
+        d += 1;
+    }
+    return bestmv;
+}
+
+// ---- UCI --------------------------------------------------------------

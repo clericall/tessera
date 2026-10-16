@@ -1,0 +1,308 @@
+// Hand-written evaluation: tapered PSTs, pawn structure, mobility, king safety.
+
+import "types.ter";
+import "movegen.ter";
+
+static FILEBB: [u64; 8] = [0; 8];
+static RANKBB: [u64; 8] = [0; 8];
+static E_MG: i64 = 0;
+static E_EG: i64 = 0;
+static E_PH: i64 = 0;
+static ZMASK: [u64; 2] = [0; 2];
+
+fn addmg(v: i64) { E_MG = E_MG + v; }
+fn addeg(v: i64) { E_EG = E_EG + v; }
+fn addph(v: i64) { E_PH = E_PH + v; }
+
+fn init_eval() {
+    var f: i64 = 0;
+    while f < 8 { FILEBB[f] = (0 - 1) << f; f += 1; }
+    var r: i64 = 0;
+    while r < 8 { RANKBB[r] = U255 << (r * 8); r += 1; }
+}
+
+// Flip files so black's pieces can be scored in white's frame of reference.
+fn mirrorbb(b: u64) -> u64 {
+    var out: u64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        let row: u64 = (b >> (i * 8)) & U255;
+        out = out | (row << ((7 - i) * 8));
+        i += 1;
+    }
+    return out;
+}
+
+fn matmg(pt: i64) -> i64 {
+    if pt == PAWN { return 82; }
+    if pt == KNIGHT { return 337; }
+    if pt == BISHOP { return 365; }
+    if pt == ROOK { return 477; }
+    if pt == QUEEN { return 1025; }
+    return 0;
+}
+fn mateg(pt: i64) -> i64 {
+    if pt == PAWN { return 94; }
+    if pt == KNIGHT { return 281; }
+    if pt == BISHOP { return 297; }
+    if pt == ROOK { return 512; }
+    if pt == QUEEN { return 936; }
+    return 0;
+}
+fn phasev(pt: i64) -> i64 {
+    if pt == KNIGHT { return 1; }
+    if pt == BISHOP { return 1; }
+    if pt == ROOK { return 2; }
+    if pt == QUEEN { return 4; }
+    return 0;
+}
+// 0 = centre square, 7 = corner, in doubled units so we stay in integers.
+fn centerd(r: i64, f: i64) -> i64 { return (absb(2 * f - 7) + absb(2 * r - 7)) / 2; }
+
+fn pstmg(pt: i64, r: i64, f: i64) -> i64 {
+    let d: i64 = centerd(r, f);
+    if pt == PAWN {
+        var a: i64 = 0;
+        if r >= 2 { a = (r - 1) * 7; if a > 24 { a = 24; } }
+        if f >= 3 && f <= 4 { a += 6; }
+        return a;
+    }
+    if pt == KNIGHT { return (7 - d) * 8 - 12; }
+    if pt == BISHOP { return (7 - d) * 7 - 9; }
+    if pt == ROOK {
+        var a: i64 = 0;
+        if r == 6 { a = 12; }
+        if r == 7 { a = 24; }
+        return a;
+    }
+    if pt == QUEEN { return (7 - d) * 3 - 6; }
+    var a: i64 = 0 - d * 14;
+    if r == 0 { a = a + 26; }
+    if r == 1 { a = a + 6; }
+    if f >= 2 && f <= 5 { a = a + 10; }
+    if r >= 2 && r <= 5 { a = a - 30; }
+    if f >= 2 && f <= 5 && r >= 2 && r <= 5 { a = a - 18; }
+    return a;
+}
+
+fn psteg(pt: i64, r: i64, f: i64) -> i64 {
+    let d: i64 = centerd(r, f);
+    if pt == PAWN {
+        var a: i64 = 0;
+        if r >= 2 { a = (r - 1) * 12; if a > 40 { a = 40; } }
+        if f >= 2 && f <= 5 { a = a + 4; }
+        return a;
+    }
+    if pt == KNIGHT { return (7 - d) * 11 - 14; }
+    if pt == BISHOP { return (7 - d) * 10 - 12; }
+    if pt == ROOK {
+        var a: i64 = 0;
+        if r == 6 { a = 16; }
+        if r == 7 { a = 22; }
+        return a;
+    }
+    if pt == QUEEN { return (7 - d) * 4 - 8; }
+    return (7 - d) * 11 - 20;
+}
+
+fn zone_of(ksq: i64) -> u64 {
+    let z0: u64 = KG[ksq] | bit(ksq);
+    var z: u64 = z0;
+    var b: u64 = z0;
+    while b != 0 {
+        let lsb: u64 = b & (0 - b);
+        let sq: i64 = ctz(lsb);
+        b = b ^ lsb;
+        z = z | KG[sq];
+    }
+    return z;
+}
+
+fn score_pawns(ownr: u64, oppr: u64, sgn: i64) {
+    var p: u64 = ownr;
+    while p != 0 {
+        let lsb: u64 = p & (0 - p);
+        let sq: i64 = ctz(lsb);
+        p = p ^ lsb;
+        let f: i64 = sq & 7;
+        let r: i64 = sq >> 3;
+        var iso: bool = false;
+        if f > 0 && (ownr & bit(sq - 1)) == 0 { iso = true; }
+        if f < 7 && (ownr & bit(sq + 1)) == 0 { iso = true; }
+        if iso { addmg(sgn * (0 - 14)); addeg(sgn * (0 - 18)); }
+        var dbl: bool = false;
+        if r > 0 && (ownr & FILEBB[f] & RANKBB[r - 1]) != 0 { dbl = true; }
+        if dbl { addmg(sgn * (0 - 8)); addeg(sgn * (0 - 24)); }
+        var pha: bool = false;
+        if f > 0 && (ownr & bit(sq - 1)) != 0 { pha = true; }
+        if f < 7 && (ownr & bit(sq + 1)) != 0 { pha = true; }
+        if pha { addmg(sgn * 6); }
+        var ahead: u64 = 0;
+        var k: i64 = r + 1;
+        while k < 8 { ahead = ahead | RANKBB[k]; k += 1; }
+        var em: u64 = FILEBB[f];
+        if f > 0 { em = em | FILEBB[f - 1]; }
+        if f < 7 { em = em | FILEBB[f + 1]; }
+        if (oppr & em & ahead) == 0 {
+            addmg(sgn * (10 + r * 5));
+            addeg(sgn * (16 + r * 14));
+        }
+    }
+}
+
+// One pass per side: every piece's attack set is computed exactly once and then
+// used for both our own mobility and pressure on the enemy king zone.
+fn score_attacks(pos: Pos, col: i64, sgn: i64) {
+    let own: u64 = pos.occ[col];
+    let opp: u64 = pos.occ[1 - col];
+    let notown: u64 = allones() ^ own;
+    var uns: u64 = KG[pos.king[1 - col]];
+    var eb: u64 = pos.bb[PAWN] & opp;
+    while eb != 0 {
+        let lsb: u64 = eb & (0 - eb);
+        let sq: i64 = ctz(lsb);
+        eb = eb ^ lsb;
+        if col == 0 { uns = uns | PA1[sq]; } else { uns = uns | PA0[sq]; }
+    }
+    let safe: u64 = notown & (allones() ^ uns);
+    let zone: u64 = ZMASK[1 - col];
+    var pb: u64 = pos.bb[PAWN] & own;
+    while pb != 0 {
+        let lsb: u64 = pb & (0 - pb);
+        let sq: i64 = ctz(lsb);
+        pb = pb ^ lsb;
+        var patk: u64 = 0;
+        if col == 0 { patk = PA0[sq]; } else { patk = PA1[sq]; }
+        let ph: i64 = popcount(patk & zone);
+        if ph > 0 { addmg(sgn * (0 - 4 * ph)); }
+    }
+    var pt: i64 = KNIGHT;
+    while pt <= QUEEN {
+        var bb: u64 = pos.bb[pt] & own;
+        while bb != 0 {
+            let lsb: u64 = bb & (0 - bb);
+            let sq: i64 = ctz(lsb);
+            bb = bb ^ lsb;
+            var atk: u64 = 0;
+            if pt == KNIGHT { atk = KN[sq]; }
+            if pt == BISHOP { atk = bish_attacks(pos, sq); }
+            if pt == ROOK { atk = rook_attacks(pos, sq); }
+            if pt == QUEEN { atk = rook_attacks(pos, sq) | bish_attacks(pos, sq); }
+            let m: i64 = popcount(atk & safe);
+            var base: i64 = 4;
+            var wm: i64 = 3;
+            var we: i64 = 3;
+            var wk: i64 = 6;
+            if pt == BISHOP { base = 6; wm = 3; we = 3; wk = 5; }
+            if pt == ROOK { base = 7; wm = 2; we = 3; wk = 9; }
+            if pt == QUEEN { base = 14; wm = 1; we = 2; wk = 12; }
+            addmg(sgn * ((m - base) * wm));
+            addeg(sgn * ((m - base) * we));
+            let h: i64 = popcount(atk & zone);
+            if h > 0 { addmg(sgn * (0 - wk * h)); }
+        }
+        pt += 1;
+    }
+    var kb: u64 = pos.bb[KING] & own;
+    while kb != 0 {
+        let lsb: u64 = kb & (0 - kb);
+        let sq: i64 = ctz(lsb);
+        kb = kb ^ lsb;
+        let h: i64 = popcount(KG[sq] & zone);
+        if h > 0 { addmg(sgn * (0 - 8 * h)); }
+    }
+}
+
+fn score_side(pos: Pos, col: i64, ownr: u64, oppr: u64, sgn: i64) {
+    let own: u64 = pos.occ[col];
+    let opp: u64 = pos.occ[1 - col];
+    var pt: i64 = KNIGHT;
+    while pt <= QUEEN {
+        var bb: u64 = pos.bb[pt] & own;
+        while bb != 0 {
+            let lsb: u64 = bb & (0 - bb);
+            let sq: i64 = ctz(lsb);
+            bb = bb ^ lsb;
+            var rf: i64 = sq & 7;
+            var rr: i64 = sq >> 3;
+            if col == 1 { rf = 7 - rf; rr = 7 - rr; }
+            addmg(sgn * (matmg(pt) + pstmg(pt, rr, rf)));
+            addeg(sgn * (mateg(pt) + psteg(pt, rr, rf)));
+            addph(phasev(pt));
+        }
+        pt += 1;
+    }
+    var pb: u64 = pos.bb[PAWN] & own;
+    while pb != 0 {
+        let lsb: u64 = pb & (0 - pb);
+        let sq: i64 = ctz(lsb);
+        pb = pb ^ lsb;
+        var rf: i64 = sq & 7;
+        var rr: i64 = sq >> 3;
+        if col == 1 { rf = 7 - rf; rr = 7 - rr; }
+        addmg(sgn * (matmg(PAWN) + pstmg(PAWN, rr, rf)));
+        addeg(sgn * (mateg(PAWN) + psteg(PAWN, rr, rf)));
+    }
+    if popcount(pos.bb[BISHOP] & own) >= 2 { addmg(sgn * 40); addeg(sgn * 52); }
+    score_pawns(ownr, oppr, sgn);
+    var rb: u64 = pos.bb[ROOK] & own;
+    while rb != 0 {
+        let lsb: u64 = rb & (0 - rb);
+        let sq: i64 = ctz(lsb);
+        rb = rb ^ lsb;
+        let fm: u64 = FILEBB[sq & 7];
+        if (pos.bb[PAWN] & fm) == 0 {
+            if (pos.bb[PAWN] & opp & fm) == 0 { addmg(sgn * 24); addeg(sgn * 10); }
+            else { addmg(sgn * 12); addeg(sgn * 6); }
+        }
+    }
+    score_attacks(pos, col, sgn);
+}
+
+// ---- NNUE (tiny fixed-point net, format v1) --------------------------------
+// Layout: fopen + sequential fread. Two transformer tables (white/black view),
+// one hidden layer of NH units, i16 weights with an i16-clipped accumulator.
+// Pos carries both accumulators so copy-make keeps them in sync automatically.
+
+fn hce_eval(pos: Pos) -> i64 {
+    E_MG = 0;
+    E_EG = 0;
+    E_PH = 0;
+    ZMASK[0] = zone_of(pos.king[0]);
+    ZMASK[1] = zone_of(pos.king[1]);
+    var col: i64 = 0;
+    while col < 2 {
+        let sgn: i64 = 1 - 2 * col;
+        let ownr: u64 = pos.occ[col];
+        let oppr: u64 = pos.occ[1 - col];
+        if col == 1 { ownr = mirrorbb(ownr); oppr = mirrorbb(oppr); }
+        score_side(pos, col, ownr, oppr, sgn);
+        col += 1;
+    }
+    if E_PH > 24 { E_PH = 24; }
+    let sc: i64 = (E_MG * E_PH + E_EG * (24 - E_PH)) / 24;
+    var r: i64 = sc;
+    if pos.stm == 1 { r = 0 - sc; }
+    return r + 10;
+}
+
+fn eval_pos_bb(pos: Pos) -> i64 {
+    if NNUE_ON == 1 { return nnue_eval(pos); }
+    return hce_eval(pos);
+}
+fn score_of_bb(pos: Pos, mv: i64) -> i64 {
+    let f: i64 = mv / 1000000;
+    let rem: i64 = mv - f * 1000000;
+    let tt: i64 = rem / 1000;
+    let pr: i64 = rem % 1000;
+    let attacker: i64 = absb(piece_at(pos, f));
+    let cap: bool = piece_at(pos, tt) != 0 || (attacker == PAWN && tt == pos.ep && piece_at(pos, tt) == 0);
+    var s: i64 = 0;
+    if cap {
+        var victim: i64 = absb(piece_at(pos, tt));
+        if victim == 0 { victim = PAWN; }
+        s = 1000000 + victim * 100 - attacker;
+    }
+    if pr != 0 { s = s + pr * 500; }
+    return s;
+}

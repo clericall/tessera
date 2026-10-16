@@ -16,7 +16,7 @@ use tessera_backend_c::emit_c;
 use tessera_check::check;
 use tessera_diag::SourceFile;
 use tessera_lexer::{tokenize, Tok};
-use tessera_parser::parse;
+use tessera_parser::{parse, parse_file};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -88,6 +88,10 @@ fn read(path: &str) -> String {
     })
 }
 
+fn count_imports(src: &str) -> usize {
+    src.lines().filter(|l| l.trim_start().starts_with("import ")).count()
+}
+
 fn render(sf: &SourceFile, code: &str, span: (usize, usize), message: &str, help: &str) -> String {
     sf.render(code, message, span, "", help)
 }
@@ -115,8 +119,9 @@ fn run_parse(path: &str) {
     let src = read(path);
     let sf = SourceFile::new(path, &src);
     print_front_diagnostics(&sf, &src);
-    let (module, _errs) = parse(&src);
-    println!("parsed {} item(s) OK", module.items.len());
+    let (module, _errs, _imported) = parse_file(Path::new(path));
+    let imps = count_imports(&src);
+    println!("parsed {} item(s) OK ({} import(s) expanded)", module.items.len(), imps);
     println!("{module:#?}");
 }
 
@@ -124,12 +129,15 @@ fn run_check(path: &str) {
     let src = read(path);
     let sf = SourceFile::new(path, &src);
     print_front_diagnostics(&sf, &src);
-    let (module, perrs) = parse(&src);
-    if !perrs.is_empty() {
+    let (module, perrs, imported) = parse_file(Path::new(path));
+    if !perrs.is_empty() || !imported.is_empty() {
         for e in &perrs {
             eprint!("{}", render(&sf, "E0002", (e.span.lo, e.span.hi), &e.message, e.help.as_deref().unwrap_or("")));
         }
-        eprintln!("{} parse error(s)", perrs.len());
+        for d in &imported {
+            eprint!("{}", render_file_diagnostic(d));
+        }
+        eprintln!("{} parse error(s)", perrs.len() + imported.len());
         std::process::exit(1);
     }
     let (prog, cerrs) = check(&module);
@@ -158,24 +166,66 @@ fn compile_program(path: &str) -> tessera_check::Program {
         std::process::exit(1);
     }
 
-    let (module, perrs) = parse(&src);
-    if !perrs.is_empty() {
+    let (module, perrs, imported) = parse_file(Path::new(path));
+    if !perrs.is_empty() || !imported.is_empty() {
         for e in &perrs {
             eprint!("{}", render(&sf, "E0002", (e.span.lo, e.span.hi), &e.message, e.help.as_deref().unwrap_or("")));
         }
-        eprintln!("{} parse error(s)", perrs.len());
+        for d in &imported {
+            eprint!("{}", render_file_diagnostic(d));
+        }
+        eprintln!("{} parse error(s)", perrs.len() + imported.len());
         std::process::exit(1);
     }
 
     let (prog, cerrs) = check(&module);
     if !cerrs.is_empty() {
         for e in &cerrs {
-            eprint!("{}", render(&sf, "E0003", (e.span.lo, e.span.hi), &e.message, e.help.as_deref().unwrap_or("")));
+            let msg = describe_item_error(&module, &e);
+            eprint!("{}", render(&sf, "E0003", (e.span.lo, e.span.hi), &msg, e.help.as_deref().unwrap_or("")));
         }
         eprintln!("{} type error(s)", cerrs.len());
         std::process::exit(1);
     }
     prog
+}
+
+/// Splice errors are all reported against the root file, so say which module the
+/// offending item came from -- otherwise "cannot find function `eval_hce`" in a
+/// five-file engine gives no clue where to look.
+fn describe_item_error(module: &tessera_ast::Module, err: &tessera_check::CheckError) -> String {
+    for item in &module.items {
+        if err.span.lo >= item.span.lo && err.span.lo < item.span.hi {
+            return format!("[{}] {}", item_origin(item), err.message);
+        }
+    }
+    err.message.clone()
+}
+
+fn item_origin(item: &tessera_ast::Item) -> String {
+    match &item.kind {
+        tessera_ast::ItemKind::Fn(f) => f.name.clone(),
+        tessera_ast::ItemKind::Struct(def) => format!("struct {}", def.name),
+        tessera_ast::ItemKind::Enum(def) => format!("enum {}", def.name),
+        tessera_ast::ItemKind::Const { name, .. } => format!("const {}", name),
+        tessera_ast::ItemKind::Static { name, .. } => format!("static {}", name),
+        tessera_ast::ItemKind::TypeAlias { name, .. } => format!("type {}", name),
+        tessera_ast::ItemKind::Import { path } => format!("import {}", path),
+    }
+}
+
+/// Render a diagnostic that came from an imported module, with its own source.
+fn render_file_diagnostic(d: &tessera_parser::FileDiagnostic) -> String {
+    if d.src.is_empty() {
+        return format!(
+            "error[E0002]: {}\n  --> {}\n  = help: {}\n\n",
+            d.err.message,
+            d.path,
+            d.err.help.as_deref().unwrap_or("")
+        );
+    }
+    let sf = SourceFile::new(&d.path, &d.src);
+    sf.render("E0002", &d.err.message, (d.err.span.lo, d.err.span.hi), "", d.err.help.as_deref().unwrap_or(""))
 }
 
 /// Like `compile_program` but only prints (for `parse`/`check` where we don't exit

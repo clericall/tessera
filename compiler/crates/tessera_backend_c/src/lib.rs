@@ -40,6 +40,15 @@ static Tr_str tr_substr(Tr_str s, int64_t from, int64_t n){
     r.p = s.p + from; r.n = n;
     return r;
 }
+static int64_t tr_str_len(Tr_str s){ return s.n; }
+static Tr_str tr_str_concat(Tr_str a, Tr_str b){
+    char* buf = (char*)malloc((size_t)(a.n + b.n + 1));
+    if (!buf) return tr_sl("", 0);
+    for (int64_t i = 0; i < a.n; i++) buf[i] = a.p[i];
+    for (int64_t i = 0; i < b.n; i++) buf[a.n + i] = b.p[i];
+    buf[a.n + b.n] = 0;
+    Tr_str r; r.p = buf; r.n = a.n + b.n; return r;
+}
 static int64_t tr_fread_u8(int64_t h){
     if (h < 0) return -1;
     unsigned char b;
@@ -64,6 +73,10 @@ static bool tr_feof(int64_t h){
     if (h < 0) return true;
     return feof((FILE*)(intptr_t)h) != 0;
 }
+static void tr_arr_assign(void* dst, const void* src, int64_t bytes){
+    __builtin_memcpy(dst, src, (unsigned long)bytes);
+}
+
 static int64_t tr_fclose(int64_t h){
     if (h < 0) return -1;
     return (int64_t)fclose((FILE*)(intptr_t)h);
@@ -107,6 +120,7 @@ fn zero_init_c(t: &Type) -> String {
     match t {
         Type::Bool => "false".into(),
         Type::Int { .. } => "0".into(),
+        Type::F32 | Type::F64 => "0.0".into(),
         Type::Unit => "".into(),
         Type::Array { elem, len } => format!("({}[{}]){{0}}", elem.c_ty(), len),
         Type::Struct(n) => format!("(Tr_{n}){{0}}"),
@@ -116,7 +130,10 @@ fn zero_init_c(t: &Type) -> String {
 
 fn params_sig(f: &Func) -> String {
     (0..f.arity)
-        .map(|i| format!("{} v{}", f.local_tys[i].c_ty(), i))
+        .map(|i| {
+            let (base, brackets) = decl_parts(&f.local_tys[i]);
+            format!("{} v{}{}", base, i, brackets)
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -160,6 +177,14 @@ fn emit_expr(e: &Expr) -> String {
                 format!("(({}){}LL)", e.ty.c_ty(), v)
             }
         }
+        ExprKind::FloatLit(v) => {
+            // Emit with enough precision to round-trip; `f` suffix for f32.
+            match e.ty {
+                Type::F32 => format!("({}){}f", e.ty.c_ty(), v),
+                Type::F64 => format!("({}){}", e.ty.c_ty(), v),
+                _ => format!("({}){}", e.ty.c_ty(), v),
+            }
+        }
         ExprKind::BoolLit(b) => if *b { "true".into() } else { "false".into() },
         ExprKind::Str(s) => format!("tr_sl({}, {})", c_escape(s), s.as_bytes().len()),
         ExprKind::Var(id) => format!("v{id}"),
@@ -170,8 +195,22 @@ fn emit_expr(e: &Expr) -> String {
             HUn::Not => format!("(!{})", emit_expr(expr)),
             HUn::BitNot => format!("(~{})", emit_expr(expr)),
         },
-        ExprKind::Assign { place, value } => format!("({} = {})", emit_place(place), emit_expr(value)),
+        ExprKind::Assign { place, value } => {
+            // C cannot assign arrays, so `a = b` / `a = [..]` needs a memcpy.
+            if let Type::Array { elem, len } = &e.ty {
+                format!(
+                    "tr_arr_assign(&{}, {}, {} * sizeof({}))",
+                    emit_place(place),
+                    emit_expr(value),
+                    len,
+                    elem.c_ty()
+                )
+            } else {
+                format!("({} = {})", emit_place(place), emit_expr(value))
+            }
+        }
         ExprKind::Field { base, name } => format!("({}).{}", emit_expr(base), name),
+        ExprKind::Cast { expr, ty } => format!("(({})({}))", ty.c_ty(), emit_expr(expr)),
         ExprKind::Index { base, index } => {
             if let Type::Str = base.ty {
                 format!("(({}).p[({})])", emit_expr(base), emit_expr(index))
@@ -181,8 +220,17 @@ fn emit_expr(e: &Expr) -> String {
         }
         ExprKind::ArrayInit(items) => {
             if let Type::Array { elem, len } = &e.ty {
-                let elems = items.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
-                format!("({}[{}]){{ {} }}", elem.c_ty(), len, elems)
+                // Cast every element to the element type: a C compound literal of
+                // int16_t cannot be initialised from int64_t expressions ("array
+                // type is not assignable"), which is what `[i16; 3] = [1, 2, 3]`
+                // produced.
+                let cty = elem.c_ty();
+                let elems = items
+                    .iter()
+                    .map(|it| format!("(({})({}))", cty, emit_expr(it)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({}[{}]){{ {} }}", cty, len, elems)
             } else {
                 "{0}".into()
             }
@@ -195,7 +243,12 @@ fn emit_expr(e: &Expr) -> String {
                     // literal, to be a valid C initializer.
                     let val = match &e.kind {
                         ExprKind::ArrayInit(items) => {
-                            format!("{{ {} }}", items.iter().map(emit_expr).collect::<Vec<_>>().join(", "))
+                            let elems = items
+                                .iter()
+                                .map(|it| format!("({})", emit_expr(it)))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("{{ {} }}", elems)
                         }
                         _ => emit_expr(e),
                     };
@@ -260,6 +313,7 @@ fn emit_call(func: &str, args: &[Expr]) -> String {
         "flush" => "(fflush(stdout))".into(),
         "btable_index" => format!("(tr_bbidx((uint64_t)({}), (uint64_t)({}), ({})))", a0(), a1(), a2()),
         "len" => format!("(({}).n)", a0()),
+        "concat" => format!("(tr_str_concat({}, {}))", a0(), a1()),
         "read_line" => "(tr_read_line())".into(),
         _ => {
             let rendered: Vec<String> = args.iter().map(emit_expr).collect();
@@ -324,7 +378,17 @@ fn emit_stmt(s: &mut String, st: &Stmt, level: usize) {
         StmtKind::Let { id, init } => {
             if let Some(e) = init {
                 ind(s, level);
-                s.push_str(&format!("v{id} = {};\n", emit_expr(e)));
+                // Array initialisers need memcpy: `v0 = (T[N]){...}` is not legal C.
+                match &e.ty {
+                    Type::Array { elem, len } => s.push_str(&format!(
+                        "tr_arr_assign(&v{}, {}, {} * sizeof({}));\n",
+                        id,
+                        emit_expr(e),
+                        len,
+                        elem.c_ty()
+                    )),
+                    _ => s.push_str(&format!("v{id} = {};\n", emit_expr(e))),
+                }
             }
         }
         StmtKind::Expr(e) => {
@@ -368,11 +432,21 @@ fn emit_block(s: &mut String, b: &tessera_check::Block, level: usize) {
     }
 }
 
+/// Splits a type into the part before the variable name and the part after it.
+/// C wants `int16_t v3[8]`, not `int16_t[8] v3` -- the latter does not compile.
+fn decl_parts(ty: &Type) -> (String, String) {
+    match ty {
+        Type::Array { elem, len } => (elem.c_ty(), format!("[{}]", len)),
+        other => (other.c_ty(), String::new()),
+    }
+}
+
 fn emit_func(s: &mut String, f: &Func) {
     s.push_str(&format!("{} tr_{}({}) {{\n", f.ret.c_ty(), f.name, params_sig(f)));
     for id in f.arity..f.local_tys.len() {
         let ty = &f.local_tys[id];
-        s.push_str(&format!("  {} v{} = {};\n", ty.c_ty(), id, zero_init_c(ty)));
+        let (base, brackets) = decl_parts(ty);
+        s.push_str(&format!("  {} v{}{} = {};\n", base, id, brackets, zero_init_c(ty)));
     }
     emit_block(s, &f.body, 1);
     if f.ret != Type::Unit {
@@ -384,7 +458,7 @@ fn emit_func(s: &mut String, f: &Func) {
 pub fn emit_c(prog: &Program) -> String {
     let mut s = String::new();
     s.push_str("/* Generated by tesserac (Tessera -> C). Do not edit. */\n");
-    s.push_str("#include <stdio.h>\n#include <stdint.h>\n#include <stdbool.h>\n#include <time.h>\n");
+    s.push_str("#include <stdio.h>\n#include <stdint.h>\n#include <stdbool.h>\n#include <time.h>\n#include <stdlib.h>\n");
     s.push_str(RUNTIME);
     s.push('\n');
     for def in &prog.structs {

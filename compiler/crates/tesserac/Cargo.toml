@@ -5,6 +5,7 @@ edition = "2021"
 description = "The Tessera compiler driver"
 
 [dependencies]
+tessera_ast = { path = "../tessera_ast" }
 tessera_lexer = { path = "../tessera_lexer" }
 tessera_diag = { path = "../tessera_diag" }
 tessera_parser = { path = "../tessera_parser" }

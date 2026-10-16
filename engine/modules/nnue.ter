@@ -1,0 +1,156 @@
+// NNUE inference: feature mapping, incremental accumulators, .tnn loader.
+
+import "types.ter";
+import "movegen.ter";
+import "eval.ter";
+
+const NH: i64 = 32;
+const NFEAT: i64 = 768;
+
+static NW1: [i16; 49152] = [0; 49152];
+static NW2: [i16; 32] = [0; 32];
+static NPSQT: [i16; 768] = [0; 768];
+static NBIAS: [i16; 32] = [0; 32];
+static NSCALE: i64 = 400;
+static NNUE_ON: i64 = 0;
+static NDX: [i64; 8] = [0; 8];
+static NSG: [i64; 8] = [0; 8];
+static NVW: [i64; 8] = [0; 8];
+static NCNT: i64 = 0;
+
+fn clip16(x: i64) -> i64 {
+    if x > 32767 { return 32767; }
+    if x < 0 - 32768 { return 0 - 32768; }
+    return x;
+}
+
+// Feature index for a piece, from one of the two perspectives.
+fn feat(col: i64, pt: i64, sq: i64, bview: i64) -> i64 {
+    var base: i64 = pt - 1;
+    var rel: i64 = sq;
+    if col != bview { base = 6 + (pt - 1); rel = 63 - sq; }
+    return base * 64 + rel;
+}
+
+fn nnue_mark(idx: i64, sgn: i64, view: i64) {
+    if NCNT < 8 { NDX[NCNT] = idx; NSG[NCNT] = sgn; NVW[NCNT] = view; NCNT += 1; }
+}
+
+// Applies every queued feature edit to both accumulators of `c`.
+fn nnue_apply(c: Pos) -> Pos {
+    var out: Pos = c;
+    var k: i64 = 0;
+    while k < NCNT {
+        let w: i64 = NDX[k] * NH;
+        if NVW[k] == 1 { w = NFEAT * NH + w; }
+        let sg: i64 = NSG[k];
+        var q: i64 = 0;
+        while q < NH {
+            if NVW[k] == 0 { out.acc[q] = clip16(out.acc[q] + sg * NW1[w + q]); }
+            else { out.acc[NH + q] = clip16(out.acc[NH + q] + sg * NW1[w + q]); }
+            q += 1;
+        }
+        k += 1;
+    }
+    return out;
+}
+
+fn nnue_seed(pos: Pos) -> Pos {
+    var p: Pos = pos;
+    var i: i64 = 0;
+    while i < NH {
+        p.acc[i] = NBIAS[i];
+        p.acc[NH + i] = NBIAS[i];
+        i += 1;
+    }
+    var sq2: i64 = 0;
+    while sq2 < 64 {
+        let pc: i64 = piece_at(p, sq2);
+        if pc != 0 {
+            let pt: i64 = absb(pc);
+            let cl: i64 = colb(pc);
+            let i0: i64 = feat(cl, pt, sq2, 0);
+            let i1: i64 = feat(cl, pt, sq2, 1);
+            var q: i64 = 0;
+            while q < NH {
+                p.acc[q] = clip16(p.acc[q] + NW1[i0 * NH + q]);
+                p.acc[NH + q] = clip16(p.acc[NH + q] + NW1[NFEAT * NH + i1 * NH + q]);
+                q += 1;
+            }
+        }
+        sq2 += 1;
+    }
+    return p;
+}
+
+fn nnue_eval(pos: Pos) -> i64 {
+    let off: i64 = pos.stm * NH;
+    var hidden: i64 = 0;
+    var i: i64 = 0;
+    while i < NH {
+        hidden += pos.acc[off + i] * NW2[i];
+        i += 1;
+    }
+    hidden = clip16(hidden);
+    var ps: i64 = 0;
+    var sq3: i64 = 0;
+    while sq3 < 64 {
+        let pc: i64 = piece_at(pos, sq3);
+        if pc != 0 { ps += NPSQT[feat(colb(pc), absb(pc), sq3, pos.stm)]; }
+        sq3 += 1;
+    }
+    let v: i64 = clip16(ps + hidden);
+    var out: i64 = (v * NSCALE) / 64;
+    if out > 8000 { out = 8000; }
+    if out < 0 - 8000 { out = 0 - 8000; }
+    return out;
+}
+
+fn nnue_clear_tt() {
+    var i: i64 = 0;
+    while i < 262144 { TT_KEY[i] = 0; i += 1; }
+}
+
+fn nnue_load(path: str) -> bool {
+    let h: i64 = fopen(path);
+    if h < 0 { return false; }
+    var m0: i64 = fread_u8(h);
+    var m1: i64 = fread_u8(h);
+    var m2: i64 = fread_u8(h);
+    var m3: i64 = fread_u8(h);
+    if m0 != 84 || m1 != 78 || m2 != 78 || m3 != 85 { fclose(h); return false; }
+    let ver: i64 = fread_i32(h);
+    let hs: i64 = fread_i32(h);
+    if ver != 1 || hs != NH { fclose(h); return false; }
+    NSCALE = fread_i32(h);
+    if NSCALE <= 0 { NSCALE = 400; }
+    var i: i64 = 0;
+    while i < NH {
+        NBIAS[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NH {
+        NW2[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NFEAT {
+        NPSQT[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NFEAT * NH {
+        NW1[i] = fread_i16(h);
+        i += 1;
+    }
+    i = 0;
+    while i < NFEAT * NH {
+        NW1[NFEAT * NH + i] = fread_i16(h);
+        i += 1;
+    }
+    fclose(h);
+    nnue_clear_tt();
+    NNUE_ON = 1;
+    return true;
+}

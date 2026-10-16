@@ -1,0 +1,334 @@
+// UCI plumbing: option parsing, command helpers, the main loop.
+
+import "types.ter";
+import "movegen.ter";
+import "eval.ter";
+import "nnue.ter";
+import "search.ter";
+
+fn sub_at(line: str, i: i64, pat: str) -> bool {
+    if i + len(pat) > len(line) { return false; }
+    var k: i64 = 0;
+    while k < len(pat) {
+        if line[i + k] != pat[k] { return false; }
+        k += 1;
+    }
+    return true;
+}
+
+fn find_sub(line: str, pat: str) -> i64 {
+    var i: i64 = 0;
+    while i < len(line) {
+        if sub_at(line, i, pat) { return i; }
+        i += 1;
+    }
+    return 0 - 1;
+}
+
+// value after `word`, or -1. UCI lines are space separated.
+fn word_num(line: str, word: str) -> i64 {
+    let at: i64 = find_sub(line, word);
+    if at < 0 { return 0; }
+    var i: i64 = at + len(word);
+    while i < len(line) && line[i] == 32 { i += 1; }
+    if i >= len(line) { return 0; }
+    return num_after(line, i);
+}
+
+fn opt_value(line: str, word: str) -> i64 {
+    if find_sub(line, word) < 0 { return 0 - 1; }
+    let v: i64 = find_sub(line, "value");
+    if v < 0 { return 0 - 1; }
+    var i: i64 = v + 5;
+    while i < len(line) && line[i] == 32 { i += 1; }
+    if i >= len(line) { return 0 - 1; }
+    return i;
+}
+
+fn handle_setoption(line: str) {
+    // Threads / Hash are accepted and ignored so GUIs stop warning.
+    let ev: i64 = opt_value(line, "EvalFile");
+    if ev >= 0 {
+        let path: str = substr(line, ev, len(line));
+        if nnue_load(path) {
+            putstr("info string nnue loaded");
+            putc(10);
+        } else {
+            putstr("info string nnue load failed");
+            putc(10);
+        }
+        return;
+    }
+    let un: i64 = opt_value(line, "UseNNUE");
+    if un >= 0 {
+        if line[un] == 102 || line[un] == 48 { NNUE_ON = 0; nnue_clear_tt(); }
+        return;
+    }
+}
+
+fn promo_char(p: i64) -> i64 {
+    if p == QUEEN { return 113; }
+    if p == ROOK { return 114; }
+    if p == BISHOP { return 98; }
+    return 110;
+}
+fn print_bestmove_bb(mv: i64) {
+    putstr("bestmove ");
+    if mv < 0 {
+        putstr("0000");
+    } else {
+        let f: i64 = mv / 1000000;
+        let rem: i64 = mv - f * 1000000;
+        let tt: i64 = rem / 1000;
+        let promo: i64 = rem % 1000;
+        putc(97 + (f & 7)); putc(49 + (f >> 3));
+        putc(97 + (tt & 7)); putc(49 + (tt >> 3));
+        if promo != 0 { putc(promo_char(promo)); }
+    }
+    putc(10);
+}
+fn apply_bb(pos: Pos, from: i64, to: i64, promo: i64) -> Pos {
+    let n: i64 = gen(pos, 0);
+    var res: Pos = pos;
+    var i: i64 = 0;
+    while i < n {
+        let mv: i64 = GMV[i];
+        let f: i64 = mv / 1000000;
+        let rem: i64 = mv - f * 1000000;
+        let tt: i64 = rem / 1000;
+        let pr: i64 = rem % 1000;
+        if f == from && tt == to && pr == promo {
+            let child: Pos = make(pos, mv);
+            if !in_check_bb(child, pos.stm) { res = child; }
+            i = n;
+        }
+        i = i + 1;
+    }
+    return res;
+}
+fn find_fen(line: str) -> i64 {
+    var i: i64 = 0;
+    while i + 3 <= len(line) {
+        if line[i] == 102 && line[i + 1] == 101 && line[i + 2] == 110 { return i + 4; }
+        i += 1;
+    }
+    return 0 - 1;
+}
+fn find_moves(line: str) -> i64 {
+    var i: i64 = 0;
+    while i + 5 <= len(line) {
+        if line[i] == 109 && line[i + 1] == 111 && line[i + 2] == 118 && line[i + 3] == 101 && line[i + 4] == 115 { return i + 6; }
+        i += 1;
+    }
+    return 0 - 1;
+}
+fn bench_depth(line: str) -> i64 {
+    var d: i64 = 6;
+    var i: i64 = 5;
+    while i < len(line) {
+        let c: i64 = line[i];
+        if c >= 48 && c <= 57 { d = num_after(line, i); i = len(line); }
+        i += 1;
+    }
+    return d;
+}
+fn wordlen(which: i64) -> i64 { if which == 1 { return 8; } if which <= 3 { return 5; } return 4; }
+fn kwmatch(line: str, i: i64, which: i64) -> bool {
+    if which == 1 { return line[i] == 109 && line[i + 1] == 111 && line[i + 2] == 118 && line[i + 3] == 101 && line[i + 4] == 116 && line[i + 5] == 105 && line[i + 6] == 109 && line[i + 7] == 101; }
+    if which == 2 { return line[i] == 119 && line[i + 1] == 116 && line[i + 2] == 105 && line[i + 3] == 109 && line[i + 4] == 101; }
+    if which == 3 { return line[i] == 98 && line[i + 1] == 116 && line[i + 2] == 105 && line[i + 3] == 109 && line[i + 4] == 101; }
+    if which == 4 { return line[i] == 119 && line[i + 1] == 105 && line[i + 2] == 110 && line[i + 3] == 99; }
+    return line[i] == 98 && line[i + 1] == 105 && line[i + 2] == 110 && line[i + 3] == 99;
+}
+fn find_kw(line: str, which: i64) -> i64 {
+    let wl: i64 = wordlen(which);
+    var i: i64 = 0;
+    while i + wl <= len(line) {
+        if kwmatch(line, i, which) { return i + wl + 1; }
+        i += 1;
+    }
+    return 0 - 1;
+}
+fn num_after(line: str, start: i64) -> i64 {
+    var val: i64 = 0;
+    var k: i64 = start;
+    while k < len(line) {
+        let c: i64 = line[k];
+        if c >= 48 && c <= 57 { val = val * 10 + (c - 48); k += 1; } else { break; }
+    }
+    return val;
+}
+fn parse_depth(line: str) -> i64 {
+    var i: i64 = 0;
+    var d: i64 = 0;
+    while i + 5 <= len(line) {
+        if line[i] == 100 && line[i + 1] == 101 && line[i + 2] == 112 && line[i + 3] == 116 && line[i + 4] == 104 {
+            var val: i64 = 0;
+            var k: i64 = i + 6;
+            while k < len(line) {
+                let c: i64 = line[k];
+                if c >= 48 && c <= 57 { val = val * 10 + (c - 48); k += 1; } else { break; }
+            }
+            if val > 0 { d = val; }
+        }
+        i += 1;
+    }
+    return d;
+}
+
+fn main() -> i64 {
+    rng_init();
+    init_bb();
+    init_eval();
+    var pos: Pos = from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0);
+    var running: i64 = 1;
+    while running == 1 {
+        let line: str = read_line();
+        let L: i64 = len(line);
+        if L == 0 {
+            running = 0;
+        } else if line[0] == 117 {
+            if L == 3 && line[1] == 99 && line[2] == 105 {
+                putstr("id name Tessera 0.2 (bitboards)"); putc(10);
+                putstr("id author Tessera"); putc(10);
+                putstr("option name EvalFile type string"); putc(10);
+                putstr("option name Threads type spin default 1 min 1 max 1"); putc(10);
+                putstr("option name Hash type spin default 16 min 16 max 16"); putc(10);
+                putstr("option name UseNNUE type check default true"); putc(10);
+                putstr("uciok"); putc(10);
+            } else if L >= 8 && line[3] == 110 {
+                pos = from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0);
+                nnue_clear_tt();
+            }
+        } else if line[0] == 105 {
+            putstr("readyok"); putc(10);
+        } else if line[0] == 112 && line[1] == 101 && line[2] == 114 && line[3] == 102 {
+            let pd: i64 = num_after(line, 6);
+            QUIET = 1;
+            var t1: i64 = perft_bb(from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0), pd, 0);
+            var t2: i64 = perft_bb(from_fen_bb("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 0), pd, 0);
+            var t3: i64 = perft_bb(from_fen_bb("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 0), pd, 0);
+            var t4: i64 = perft_bb(from_fen_bb("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 0), pd, 0);
+            var t5: i64 = perft_bb(from_fen_bb("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 0), pd, 0);
+            var t6: i64 = perft_bb(from_fen_bb("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 0), pd, 0);
+            QUIET = 0;
+            putstr("perft depth "); putint(pd); putc(10);
+            putstr("start   "); putint(t1); putc(10);
+            putstr("kiwi    "); putint(t2); putc(10);
+            putstr("pos3    "); putint(t3); putc(10);
+            putstr("pos4    "); putint(t4); putc(10);
+            putstr("pos5    "); putint(t5); putc(10);
+            putstr("pos6    "); putint(t6); putc(10);
+        } else if line[0] == 112 {
+            let fb: i64 = find_fen(line);
+            if fb > 0 { pos = from_fen_bb(line, fb); } else { pos = from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0); }
+            let j: i64 = find_moves(line);
+            if j >= 0 {
+                while j + 4 <= L {
+                    if line[j] < 97 || line[j] > 104 { break; }
+                    let ff: i64 = line[j] - 97;
+                    let frr: i64 = line[j + 1] - 49;
+                    let tf: i64 = line[j + 2] - 97;
+                    let tr: i64 = line[j + 3] - 49;
+                    var promo: i64 = 0;
+                    var advp: i64 = 4;
+                    if j + 4 < L && line[j + 4] != 32 {
+                        let pc: i64 = line[j + 4];
+                        if pc == 113 { promo = QUEEN; }
+                        if pc == 114 { promo = ROOK; }
+                        if pc == 98 { promo = BISHOP; }
+                        if pc == 110 { promo = KNIGHT; }
+                        advp = 5;
+                    }
+                    let fromsq: i64 = frr * 8 + ff;
+                    let tosq: i64 = tr * 8 + tf;
+                    pos = apply_bb(pos, fromsq, tosq, promo);
+                    j = j + advp + 1;
+                }
+            }
+        } else if line[0] == 103 {
+            var maxdepth: i64 = 64;
+            let dd: i64 = parse_depth(line);
+            if dd > 0 { maxdepth = dd; }
+            NODELIMIT = 0;
+            NODELIMIT = word_num(line, "nodes");
+            DEADLINE = now_ms() + 60000;
+            let mt: i64 = find_kw(line, 1);
+            if mt >= 0 { let ms: i64 = num_after(line, mt); if ms > 0 { DEADLINE = now_ms() + ms - 30; } }
+            let wt: i64 = find_kw(line, 2);
+            let bt: i64 = find_kw(line, 3);
+            let wi: i64 = find_kw(line, 4);
+            let bi: i64 = find_kw(line, 5);
+            if wt >= 0 || bt >= 0 {
+                var myt: i64 = 0; var myinc: i64 = 0;
+                if pos.stm == 0 { if wt >= 0 { myt = num_after(line, wt); } if wi >= 0 { myinc = num_after(line, wi); } }
+                else { if bt >= 0 { myt = num_after(line, bt); } if bi >= 0 { myinc = num_after(line, bi); } }
+                if myt > 0 {
+                    var budget: i64 = myt / 4 + myinc / 2;
+                    if budget > 3000 { budget = 3000; }
+                    if budget < 30 { budget = 30; }
+                    DEADLINE = now_ms() + budget;
+                }
+
+            }
+            let mv: i64 = search_root(pos, maxdepth);
+            print_bestmove_bb(mv);
+        } else if line[0] == 98 {
+            QUIET = 1;
+            let depth: i64 = bench_depth(line);
+            var total: i64 = 0;
+            let t0: i64 = now_ms();
+            search_root(from_fen_bb("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 0), depth); total += NODES;
+            search_root(from_fen_bb("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 0), depth); total += NODES;
+            search_root(from_fen_bb("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 0), depth); total += NODES;
+            search_root(from_fen_bb("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 0), depth); total += NODES;
+            search_root(from_fen_bb("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 0), depth); total += NODES;
+            search_root(from_fen_bb("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 0), depth); total += NODES;
+            let ms: i64 = now_ms() - t0;
+            QUIET = 0;
+            putstr("bench depth "); putint(depth); putc(10);
+            putstr("nodes "); putint(total); putc(10);
+            putstr("time_ms "); putint(ms); putc(10);
+            var nps: i64 = 0;
+            if ms > 0 { nps = (total * 1000) / ms; }
+            putstr("nps "); putint(nps); putc(10);
+        } else if line[0] == 115 {
+            handle_setoption(line);
+        } else if line[0] == 101 && line[1] == 118 {
+            QUIET = 1;
+            putstr("hce="); putint(hce_eval(pos));
+            putstr(" stm="); putint(pos.stm);
+            if NNUE_ON == 1 {
+                putstr(" nnue="); putint(nnue_eval(pos));
+                let fresh: Pos = nnue_seed(pos);
+                putstr(" fresh="); putint(nnue_eval(fresh));
+                var same: bool = true;
+                var q9: i64 = 0;
+                while q9 < 64 { if fresh.acc[q9] != pos.acc[q9] { same = false; } q9 += 1; }
+                putstr(" accok="); if same { putstr("yes"); } else { putstr("NO"); }
+                if !same {
+                    var q8: i64 = 0;
+                    while q8 < 64 { if fresh.acc[q8] != pos.acc[q8] { putstr(" firstdiff="); putint(q8); putstr(" inc="); putint(pos.acc[q8]); putstr(" seed="); putint(fresh.acc[q8]); break; } q8 += 1; }
+                }
+            }
+            putc(10);
+            QUIET = 0;
+        } else if line[0] == 102 && line[1] == 105 {
+            // dump the active feature indices (cross-checked against tools/gen_data.py)
+            var v0: i64 = 0;
+            while v0 < 2 {
+                var z0: i64 = 0;
+                while z0 < 64 {
+                    let pc: i64 = piece_at(pos, z0);
+                    if pc != 0 { putint(feat(colb(pc), absb(pc), z0, v0)); putc(10); }
+                    z0 += 1;
+                }
+                v0 += 1;
+            }
+        } else if line[0] == 113 {
+            running = 0;
+        }
+        flush();
+    }
+    return 0;
+}

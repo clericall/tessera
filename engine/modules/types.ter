@@ -1,0 +1,30 @@
+// Core types and constants: piece codes and the position struct.
+
+// ---------------------------------------------------------------------------
+// Tessera chess engine — E2: bitboard movegen (plain/fixed-shift magic) + perft.
+// Squares 0..63 (a1=0, file=sq&7, rank=sq>>3). Types 1P 2N 3B 4R 5Q 6K (+W, -B).
+// Occupancy index uses `btable_index` (hardware pext under -mbmi2 / Tier C;
+// plain shift on Tier A/B). movegen copy-make. Validated against known perft.
+// ---------------------------------------------------------------------------
+
+const ONE: u64 = 1;
+const PAWN: i64 = 1;
+const KNIGHT: i64 = 2;
+const BISHOP: i64 = 3;
+const ROOK: i64 = 4;
+const QUEEN: i64 = 5;
+const KING: i64 = 6;
+const BAND: i64 = 256;
+const U255: u64 = 255;
+struct Pos {
+
+    bb: [u64; 7],
+    acc: [i16; 64],
+    occ: [u64; 2],
+    all: u64,
+    stm: i64,
+    ep: i64,
+    castle: i64,
+    king: [i64; 2],
+    key: i64,
+}

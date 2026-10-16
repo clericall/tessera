@@ -6,3 +6,7 @@ description = "Tessera C backend (typed IR -> readable C)"
 
 [dependencies]
 tessera_check = { path = "../tessera_check" }
+
+[dev-dependencies]
+tessera_ast = { path = "../tessera_ast" }
+tessera_parser = { path = "../tessera_parser" }
