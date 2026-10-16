@@ -95,17 +95,20 @@ Stockfish we used the build that matches this CPU's features, at identical threa
 
 ## Build & try it
 
-You'll need a Rust toolchain and clang.
+You'll need a Rust toolchain. clang is only needed for the C backend (`build`); `run --interpret`
+executes directly with no C at all.
 
 ```bash
 cd compiler
 cargo build
-# A quick speed run (perft + a small search), AVX2 tier:
-target/debug/tesserac.exe build samples/bbuci.ter -o /tmp/tessera --tier c
 
-# Or the compiler itself, on a Tessera program:
-target/debug/tesserac.exe run samples/fib.ter
+# Run directly with the tree-walking VM — no C, no clang:
+target/debug/tesserac.exe run samples/fib.ter --interpret
+
+# Or compile via C → clang for a native binary:
+target/debug/tesserac.exe build samples/bbuci.ter -o /tmp/tessera --tier c
 ```
+
 
 `engine/bb.ter` is the engine; run the resulting binary and type `uci`, `position startpos`,
 `go depth 8`, `quit`.

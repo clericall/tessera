@@ -17,6 +17,7 @@ use tessera_check::check;
 use tessera_diag::SourceFile;
 use tessera_lexer::{tokenize, Tok};
 use tessera_parser::{parse, parse_file};
+use tessera_vm::Vm;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -57,7 +58,34 @@ fn main() {
             }
             run_build(&file, out, tier);
         }
-        "run" => run_exec(&args[2]),
+        "run" => {
+            let mut file = String::new();
+            let mut interpret = false;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--interpret" => {
+                        interpret = true;
+                        i += 1;
+                    }
+                    other => {
+                        if !other.starts_with('-') && file.is_empty() {
+                            file = other.to_string();
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            if file.is_empty() {
+                eprintln!("usage: tesserac run <file.ter> [--interpret]");
+                std::process::exit(2);
+            }
+            if interpret {
+                run_interpret(&file);
+            } else {
+                run_exec(&file);
+            }
+        }
         other => {
             eprintln!("unknown subcommand `{other}`");
             std::process::exit(2);
@@ -359,6 +387,23 @@ fn run_exec(path: &str) {
         Ok(s) => std::process::exit(s.code().unwrap_or(0)),
         Err(e) => {
             eprintln!("error: failed to run {exe:?}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Type-check and execute directly with the tree-walking VM — no C, no clang.
+fn run_interpret(path: &str) {
+    let prog = compile_program(path);
+    let mut vm = Vm::new();
+    vm.load_program(&prog);
+    match vm.run_main() {
+        Ok(code) => {
+            print!("{}", vm.stdout());
+            std::process::exit(code as i32);
+        }
+        Err(e) => {
+            eprintln!("runtime error: {e}");
             std::process::exit(1);
         }
     }

@@ -48,6 +48,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessera_vm"
+version = "0.1.0"
+dependencies = [
+ "tessera_ast",
+ "tessera_check",
+]
+
+[[package]]
 name = "tesserac"
 version = "0.1.0"
 dependencies = [
@@ -57,4 +65,5 @@ dependencies = [
  "tessera_diag",
  "tessera_lexer",
  "tessera_parser",
+ "tessera_vm",
 ]

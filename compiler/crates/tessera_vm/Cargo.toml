@@ -1,0 +1,9 @@
+[package]
+name = "tessera_vm"
+version = "0.1.0"
+edition = "2021"
+description = "Tree-walking interpreter for Tessera's typed IR — runs .ter programs without C or clang"
+
+[dependencies]
+tessera_check = { path = "../tessera_check" }
+tessera_ast = { path = "../tessera_ast" }
